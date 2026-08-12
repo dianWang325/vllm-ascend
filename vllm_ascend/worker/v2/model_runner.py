@@ -17,6 +17,7 @@
 # This file is a part of the vllm-ascend project.
 #
 
+import time
 from contextlib import contextmanager
 
 import numpy as np
@@ -228,6 +229,12 @@ class NPUModelRunner(GPUModelRunner):
         skip_attn_for_dummy_run: bool = False,
         is_profile: bool = False,
     ):
+        if self.ascend_config.scheduler_config.profiling_chunk_config.need_timing:
+            if getattr(scheduler_output, "disable_profiling_timing", False):
+                self.ascend_config.scheduler_config.profiling_chunk_config.need_timing = False
+            else:
+                torch.npu.synchronize()
+                self._execution_start_time = time.perf_counter()
         with flashcomm_dispatch_wrapper(self.vllm_config):
             output = super().execute_model(
                 scheduler_output,
@@ -260,6 +267,25 @@ class NPUModelRunner(GPUModelRunner):
                 hidden_states=hidden_states,
                 aux_hidden_states=aux_hidden_states,
             )
+
+        return output
+
+    @torch.inference_mode()
+    def sample_tokens(self, grammar_output):
+        output = super().sample_tokens(grammar_output)
+
+        if self.ascend_config.scheduler_config.profiling_chunk_config.need_timing and hasattr(
+            self, "_execution_start_time"
+        ):
+            torch.npu.synchronize()
+            execution_time_ms = (time.perf_counter() - self._execution_start_time) * 1000.0
+
+            # MRV2 normally returns AsyncOutput on the last PP rank.
+            # Preserve the timing on its inner ModelRunnerOutput so it reaches
+            # the scheduler after get_output().
+            model_runner_output = getattr(output, "model_runner_output", output)
+            if model_runner_output is not None:
+                model_runner_output.execution_time_ms = execution_time_ms
 
         return output
 
