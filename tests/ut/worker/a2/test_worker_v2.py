@@ -72,11 +72,13 @@ class TestNPUWorkerV2(TestBase):
             )
 
             model_runner = MagicMock()
+            model_runner.ascend_config.scheduler_config.profiling_chunk_config.trace_enabled = False
             model_runner.max_num_reqs = 8
             worker.model_runner = model_runner
 
             def check_temporary_state(**kwargs):
                 self.assertEqual(model_runner.max_num_reqs, 1)
+                self.assertTrue(model_runner._cpp_startup_profile_active)
 
             model_runner._dummy_run.side_effect = check_temporary_state
             mock_get_pp_group.return_value.is_first_rank = True
@@ -86,6 +88,7 @@ class TestNPUWorkerV2(TestBase):
 
             self.assertEqual(latency_ms, 250.0)
             self.assertEqual(model_runner.max_num_reqs, 8)
+            self.assertFalse(model_runner._cpp_startup_profile_active)
             model_runner._dummy_run.assert_called_once_with(
                 num_tokens=512,
                 force_attention=True,
@@ -111,6 +114,7 @@ class TestNPUWorkerV2(TestBase):
             )
 
             model_runner = MagicMock()
+            model_runner.ascend_config.scheduler_config.profiling_chunk_config.trace_enabled = False
             model_runner.max_num_reqs = 8
             model_runner._dummy_run.side_effect = RuntimeError("dummy failure")
             worker.model_runner = model_runner
@@ -121,4 +125,5 @@ class TestNPUWorkerV2(TestBase):
                 worker.profile_prefill_latency(512)
 
             self.assertEqual(model_runner.max_num_reqs, 8)
+            self.assertFalse(model_runner._cpp_startup_profile_active)
             self.assertEqual(mock_synchronize.call_count, 1)

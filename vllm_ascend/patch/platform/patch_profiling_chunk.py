@@ -32,6 +32,8 @@ patches inside the child process before any ``EngineCore`` is instantiated.
 from vllm.logger import logger
 from vllm.v1.engine.core import EngineCore, EngineCoreProc
 
+from vllm_ascend.core.profiling_chunk_trace import log_cpp_trace
+
 _profiling_patches_applied = False
 _original_update_from_output = None
 _original_schedule = None
@@ -55,6 +57,9 @@ def _record_execution_timing(scheduler, scheduler_output, model_output):
     if profiling_mgr is None or not profiling_mgr.is_ready:
         return
 
+    profiling_config = scheduler.profiling_chunk_config
+    trace_enabled = getattr(profiling_config, "trace_enabled", False)
+
     # Once both the target latency and history model are calibrated,
     # stop collecting timing data and disable the synchronize-and-time
     # calls in the model runner to avoid unnecessary pipeline stalls.
@@ -69,6 +74,14 @@ def _record_execution_timing(scheduler, scheduler_output, model_output):
         # a ``disable_profiling_timing`` flag to the worker process,
         # which will set its own process-local need_timing to False.
         scheduler._profiling_timing_done = True
+        if trace_enabled and not getattr(scheduler, "_cpp_trace_timing_disabled", False):
+            scheduler._cpp_trace_timing_disabled = True
+            log_cpp_trace(
+                "online_calibration_completed",
+                fit_sample_count=len(profiling_mgr.chunked_fit_data),
+                history_fitted=True,
+                disable_profiling_timing=True,
+            )
         return
 
     elapsed_time_ms = getattr(model_output, "execution_time_ms", 0.0)
@@ -120,8 +133,53 @@ def _record_execution_timing(scheduler, scheduler_output, model_output):
             logger.debug("[ProfilingChunk] Skipping timing sample: unable to extract per-request chunk info")
             return
 
+        predictor_updated = False
         if not profiling_mgr.predictor.history_fitted:
-            profiling_mgr.record_batch_execution_time(request_chunks, elapsed_time)
+            predictor_updated = profiling_mgr.record_batch_execution_time(request_chunks, elapsed_time)
+
+        disable_profiling_timing = profiling_mgr._set_time_done and profiling_mgr.predictor.history_fitted
+        if disable_profiling_timing:
+            profiling_config.need_timing = False
+            scheduler._profiling_timing_done = True
+
+        if trace_enabled:
+            fit_sample_count = len(profiling_mgr.chunked_fit_data)
+            if predictor_updated:
+                log_cpp_trace(
+                    "history_predictor_updated",
+                    fit_sample_count=fit_sample_count,
+                    with_history_ready=profiling_mgr.history_ready,
+                    history_fitted=profiling_mgr.predictor.history_fitted,
+                    quadratic_coefficients={
+                        "a": profiling_mgr.predictor.quadratic_chunk_a,
+                        "b": profiling_mgr.predictor.linear_chunk_b,
+                        "c": profiling_mgr.predictor.constant_chunk_c,
+                    },
+                )
+
+            trace_records = getattr(scheduler_output, "cpp_trace_records", [])
+            for record in trace_records:
+                log_cpp_trace(
+                    "scheduler_iteration",
+                    **record,
+                    actual_execution_time_ms=elapsed_time_ms,
+                    batch_execution_time_ms=elapsed_time_ms,
+                    execution_time_scope="batch",
+                    with_history_ready=profiling_mgr.history_ready,
+                    history_fitted=profiling_mgr.predictor.history_fitted,
+                    fit_sample_count=fit_sample_count,
+                    predictor_updated=predictor_updated,
+                    disable_profiling_timing=disable_profiling_timing,
+                )
+
+            if disable_profiling_timing and not getattr(scheduler, "_cpp_trace_timing_disabled", False):
+                scheduler._cpp_trace_timing_disabled = True
+                log_cpp_trace(
+                    "online_calibration_completed",
+                    fit_sample_count=fit_sample_count,
+                    history_fitted=True,
+                    disable_profiling_timing=True,
+                )
 
     except (AttributeError, TypeError) as e:
         logger.debug("Failed to record execution timing: %s", e)

@@ -1,18 +1,23 @@
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from vllm.v1.worker.gpu.model_runner import GPUModelRunner
+from vllm.config.compilation import CUDAGraphMode
 
-from vllm_ascend.worker.v2.model_runner import NPUModelRunner
+from vllm_ascend.worker.v2.model_runner import (
+    NPUModelRunner,
+    flashcomm_dispatch_wrapper,
+)
 
 
-def _make_runner(need_timing: bool = True):
+def _make_runner(need_timing: bool = True, trace_enabled: bool = False):
     runner = NPUModelRunner.__new__(NPUModelRunner)
     runner.ascend_config = SimpleNamespace(
         scheduler_config=SimpleNamespace(
             profiling_chunk_config=SimpleNamespace(
-                need_timing=need_timing
+                need_timing=need_timing,
+                trace_enabled=trace_enabled,
             )
         )
     )
@@ -20,6 +25,32 @@ def _make_runner(need_timing: bool = True):
     runner.execute_model_state = None
     runner.is_last_pp_rank = False
     return runner
+
+
+def test_dummy_run_is_inherited_from_upstream_model_runner():
+    assert NPUModelRunner._dummy_run is GPUModelRunner._dummy_run
+
+
+def test_dispatch_wrapper_captures_final_execution_mode():
+    descriptor = SimpleNamespace(cg_mode=CUDAGraphMode.NONE)
+    callback = MagicMock()
+    vllm_config = SimpleNamespace(parallel_config=SimpleNamespace(tensor_parallel_size=1))
+
+    with (
+        patch("vllm_ascend.worker.v2.model_runner.enable_sp", return_value=False),
+        patch(
+            "vllm_ascend.worker.v2.model_runner.vllm_model_runner.dispatch_cg_and_sync_dp",
+            return_value=(descriptor, None),
+        ),
+        flashcomm_dispatch_wrapper(vllm_config, callback),
+    ):
+        from vllm.v1.worker.gpu import model_runner as upstream_model_runner
+
+        upstream_model_runner.dispatch_cg_and_sync_dp(
+            None, 1, 512, None, 1, 0, need_eager=False
+        )
+
+    callback.assert_called_once_with(descriptor, False)
 
 
 def test_execute_model_starts_profiling_timer():

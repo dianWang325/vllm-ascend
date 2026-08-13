@@ -18,6 +18,7 @@
 #
 
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
 
 import numpy as np
@@ -70,14 +71,18 @@ from vllm_ascend.worker.v2.utils import torch_cuda_wrapper
 
 # TODO: remove this wrapper when vllm-ascend supports sequence parallel on model runner v2.
 @contextmanager
-def flashcomm_dispatch_wrapper(vllm_config: VllmConfig):
+def flashcomm_dispatch_wrapper(
+    vllm_config: VllmConfig,
+    trace_callback: Callable[[BatchExecutionDescriptor, bool], None] | None = None,
+):
     """Pad batches before v2 selects an eager or graph execution shape.
 
     FlashComm1 reduce-scatter requires the token dimension to be divisible by
     tensor parallel size. Padding in ``prepare_inputs`` is too late for full
     graphs because their replay shape has already been selected by then.
     """
-    if not enable_sp(vllm_config):
+    sequence_parallel_enabled = enable_sp(vllm_config)
+    if not sequence_parallel_enabled and trace_callback is None:
         yield
         return
 
@@ -94,8 +99,9 @@ def flashcomm_dispatch_wrapper(vllm_config: VllmConfig):
         need_eager=False,
         num_active_loras=0,
     ):
-        num_tokens = (num_tokens + tp_size - 1) // tp_size * tp_size
-        return original_dispatch(
+        if sequence_parallel_enabled:
+            num_tokens = (num_tokens + tp_size - 1) // tp_size * tp_size
+        result = original_dispatch(
             cudagraph_manager,
             num_reqs,
             num_tokens,
@@ -105,6 +111,9 @@ def flashcomm_dispatch_wrapper(vllm_config: VllmConfig):
             need_eager=need_eager,
             num_active_loras=num_active_loras,
         )
+        if trace_callback is not None:
+            trace_callback(result[0], need_eager)
+        return result
 
     vllm_model_runner.dispatch_cg_and_sync_dp = dispatch_with_flashcomm_padding
     try:
@@ -229,13 +238,40 @@ class NPUModelRunner(GPUModelRunner):
         skip_attn_for_dummy_run: bool = False,
         is_profile: bool = False,
     ):
-        if self.ascend_config.scheduler_config.profiling_chunk_config.need_timing:
+        profiling_config = self.ascend_config.scheduler_config.profiling_chunk_config
+        if profiling_config.need_timing:
             if getattr(scheduler_output, "disable_profiling_timing", False):
                 self.ascend_config.scheduler_config.profiling_chunk_config.need_timing = False
+                if getattr(profiling_config, "trace_enabled", False):
+                    from vllm_ascend.core.profiling_chunk_trace import log_cpp_trace
+
+                    log_cpp_trace(
+                        "worker_profiling_timing_disabled",
+                        runner="mrv2",
+                        need_timing=False,
+                    )
             else:
                 torch.npu.synchronize()
                 self._execution_start_time = time.perf_counter()
-        with flashcomm_dispatch_wrapper(self.vllm_config):
+        trace_startup_profile = (
+            getattr(profiling_config, "trace_enabled", False)
+            and dummy_run
+            and getattr(self, "_cpp_startup_profile_active", False)
+        )
+        if trace_startup_profile:
+            self._cpp_profile_npu_execute_model_entered = True
+            self._cpp_profile_upstream_execute_model_completed = False
+            self._cpp_profile_execution_mode = None
+            self._cpp_profile_need_eager = None
+
+        def capture_execution_mode(batch_desc: BatchExecutionDescriptor, need_eager: bool) -> None:
+            self._cpp_profile_execution_mode = batch_desc.cg_mode.name
+            self._cpp_profile_need_eager = need_eager
+
+        with flashcomm_dispatch_wrapper(
+            self.vllm_config,
+            capture_execution_mode if trace_startup_profile else None,
+        ):
             output = super().execute_model(
                 scheduler_output,
                 intermediate_tensors=intermediate_tensors,
@@ -243,6 +279,8 @@ class NPUModelRunner(GPUModelRunner):
                 skip_attn_for_dummy_run=skip_attn_for_dummy_run,
                 is_profile=is_profile,
             )
+        if trace_startup_profile:
+            self._cpp_profile_upstream_execute_model_completed = True
 
         state = self.execute_model_state
         if (

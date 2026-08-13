@@ -848,6 +848,14 @@ class NPUWorker(WorkerBase):
         num_tokens = min(num_tokens, self.scheduler_config.max_num_batched_tokens)
         num_tokens = max(num_tokens, 1)
 
+        profiling_config = self.model_runner.ascend_config.scheduler_config.profiling_chunk_config
+        trace_enabled = getattr(profiling_config, "trace_enabled", False)
+        if trace_enabled:
+            self.model_runner._cpp_profile_execution_mode = None
+            self.model_runner._cpp_profile_need_eager = None
+            self.model_runner._cpp_profile_npu_execute_model_entered = False
+            self.model_runner._cpp_profile_upstream_execute_model_completed = False
+
         # Synchronize all devices before timing
         # This ensures clean measurement in PP/TP scenarios
         torch.npu.synchronize()
@@ -863,6 +871,7 @@ class NPUWorker(WorkerBase):
         old_max_num_reqs = self.model_runner.max_num_reqs
         try:
             self.model_runner.max_num_reqs = 1
+            self.model_runner._cpp_startup_profile_active = True
 
             dummy_run_kwargs = {
                 "num_tokens": num_tokens,
@@ -878,12 +887,36 @@ class NPUWorker(WorkerBase):
 
             self.model_runner._dummy_run(**dummy_run_kwargs)
         finally:
+            self.model_runner._cpp_startup_profile_active = False
             self.model_runner.max_num_reqs = old_max_num_reqs
 
         # Synchronize after forward to ensure NPU operations complete
         torch.npu.synchronize()
 
         latency_ms = (time.perf_counter() - start) * 1000
+
+        if trace_enabled:
+            from vllm_ascend.core.profiling_chunk_trace import log_cpp_trace
+
+            log_cpp_trace(
+                "startup_profile_sample",
+                runner="mrv2" if self.use_v2_model_runner else "mrv1",
+                pp_rank=get_pp_group().rank_in_group,
+                num_tokens=num_tokens,
+                dummy_run=True,
+                inherited_dummy_run_entered=self.use_v2_model_runner,
+                npu_execute_model_entered=getattr(
+                    self.model_runner, "_cpp_profile_npu_execute_model_entered", False
+                ),
+                upstream_execute_model_completed=getattr(
+                    self.model_runner,
+                    "_cpp_profile_upstream_execute_model_completed",
+                    False,
+                ),
+                need_eager=getattr(self.model_runner, "_cpp_profile_need_eager", None),
+                execution_mode=getattr(self.model_runner, "_cpp_profile_execution_mode", None),
+                latency_ms=round(latency_ms, 3),
+            )
 
         # Log for debugging in PP mode
         if not is_first_pp_rank:

@@ -1791,6 +1791,18 @@ class NPUModelRunner(GPUModelRunner):
             # not affect this worker process.
             if getattr(scheduler_output, "disable_profiling_timing", False):
                 self.ascend_config.scheduler_config.profiling_chunk_config.need_timing = False
+                if getattr(
+                    self.ascend_config.scheduler_config.profiling_chunk_config,
+                    "trace_enabled",
+                    False,
+                ):
+                    from vllm_ascend.core.profiling_chunk_trace import log_cpp_trace
+
+                    log_cpp_trace(
+                        "worker_profiling_timing_disabled",
+                        runner="mrv1",
+                        need_timing=False,
+                    )
             else:
                 self._sync_device()
                 self._execution_start_time = time.perf_counter()
@@ -3271,6 +3283,13 @@ class NPUModelRunner(GPUModelRunner):
                 f"Cudagraph runtime mode mismatch in dummy_run. "
                 f"Expected {_cudagraph_mode}, but got {cudagraph_runtime_mode}."
             )
+        if profile_cpp and getattr(
+            self.ascend_config.scheduler_config.profiling_chunk_config,
+            "trace_enabled",
+            False,
+        ):
+            self._cpp_profile_execution_mode = cudagraph_runtime_mode.name
+            self._cpp_profile_need_eager = True
         num_tokens_padded = batch_desc.num_tokens
         num_reqs_padded = batch_desc.num_reqs if batch_desc.num_reqs is not None else num_reqs
         if num_tokens_across_dp is not None and num_tokens_padded != num_tokens:

@@ -93,6 +93,7 @@ class ProfilingChunkScheduler(Scheduler):
             max_fit_chunk=profiling_cfg.max_fit_chunk,
         )
         self._profiling_initialized = False
+        self._cpp_trace_iteration = 0
 
         logger.info(
             "[ProfilingChunk] Scheduler initialized. base_chunk=%d, page_size=%d, smooth_factor=%.2f, min_chunk=%d",
@@ -199,6 +200,22 @@ class ProfilingChunkScheduler(Scheduler):
         self.profiling_chunk_manager._profiling_done = True
 
         logger.info("[ProfilingChunk] Profiling completed successfully")
+        if getattr(self.profiling_chunk_config, "trace_enabled", False):
+            from vllm_ascend.core.profiling_chunk_trace import log_cpp_trace
+
+            log_cpp_trace(
+                "startup_profile_completed",
+                initial_samples=len(seq_lens),
+                is_ready=self.profiling_chunk_manager.is_ready,
+                with_history_ready=self.profiling_chunk_manager.history_ready,
+                history_fitted=predictor.history_fitted,
+                target_latency_ms=predictor.target_latency,
+                quadratic_coefficients={
+                    "a": predictor.quadratic_coeff_a,
+                    "b": predictor.linear_coeff_b,
+                    "c": predictor.constant_coeff_c,
+                },
+            )
 
     @staticmethod
     def _build_rpc_kwargs(model_executor) -> dict:
@@ -246,6 +263,11 @@ class ProfilingChunkScheduler(Scheduler):
 
         req_to_new_blocks: dict[str, KVCacheBlocks] = {}
         num_scheduled_tokens: dict[str, int] = {}
+        trace_enabled = getattr(self.profiling_chunk_config, "trace_enabled", False)
+        cpp_trace_records: dict[str, dict] = {}
+        if trace_enabled:
+            self._cpp_trace_iteration += 1
+        iteration = self._cpp_trace_iteration
         # >>> PROFILING CHUNK >>>
         target_latency = self.profiling_chunk_manager.predictor.target_latency
         time_budget = target_latency if target_latency is not None else float("inf")
@@ -271,6 +293,7 @@ class ProfilingChunkScheduler(Scheduler):
         while req_index < len(self.running) and token_budget > 0 and time_budget > 0:
             # <<< PROFILING CHUNK <<<
             request = self.running[req_index]
+            predicted_chunk = None
 
             if (
                 request.num_output_placeholders > 0
@@ -402,6 +425,21 @@ class ProfilingChunkScheduler(Scheduler):
             request_id = request.request_id
             req_to_new_blocks[request_id] = new_blocks
             num_scheduled_tokens[request_id] = num_new_tokens
+            if trace_enabled and request.num_computed_tokens < request.num_prompt_tokens:
+                hist_seq_len = request.num_computed_tokens
+                cpp_trace_records[request_id] = {
+                    "iteration": iteration,
+                    "req_id": request_id,
+                    "num_computed_tokens": hist_seq_len,
+                    "hist_seq_len": hist_seq_len,
+                    "remaining_prefill_tokens": max(request.num_prompt_tokens - hist_seq_len, 0),
+                    "target_latency_ms": target_latency,
+                    "predicted_chunk_size": predicted_chunk,
+                    "actual_scheduled_chunk_size": num_new_tokens,
+                    "predicted_latency_ms": self.profiling_chunk_manager.predict_time(
+                        num_new_tokens, hist_seq_len
+                    ),
+                }
             token_budget -= num_new_tokens
             # Decode requests (num_new_tokens == 1) have negligible latency;
             # skip time_budget accounting so they don't starve other requests.
@@ -461,6 +499,7 @@ class ProfilingChunkScheduler(Scheduler):
 
                 request = request_queue.peek_request()
                 request_id = request.request_id
+                predicted_chunk = None
 
                 # Try to promote blocked statuses while traversing skipped queue.
                 if self._is_blocked_waiting_status(request.status) and not self._try_promote_blocked_waiting_request(
@@ -658,6 +697,20 @@ class ProfilingChunkScheduler(Scheduler):
                     scheduled_loras.add(request.lora_request.lora_int_id)
                 req_to_new_blocks[request_id] = self.kv_cache_manager.get_blocks(request_id)
                 num_scheduled_tokens[request_id] = num_new_tokens
+                if trace_enabled and num_computed_tokens < request.num_prompt_tokens:
+                    cpp_trace_records[request_id] = {
+                        "iteration": iteration,
+                        "req_id": request_id,
+                        "num_computed_tokens": num_computed_tokens,
+                        "hist_seq_len": num_computed_tokens,
+                        "remaining_prefill_tokens": max(request.num_prompt_tokens - num_computed_tokens, 0),
+                        "target_latency_ms": target_latency,
+                        "predicted_chunk_size": predicted_chunk,
+                        "actual_scheduled_chunk_size": num_new_tokens,
+                        "predicted_latency_ms": self.profiling_chunk_manager.predict_time(
+                            num_new_tokens, num_computed_tokens
+                        ),
+                    }
                 token_budget -= num_new_tokens
                 # Decode requests (num_new_tokens == 1) have negligible latency;
                 # skip time_budget accounting so they don't starve other requests.
@@ -746,6 +799,8 @@ class ProfilingChunkScheduler(Scheduler):
             free_encoder_mm_hashes=self.encoder_cache_manager.get_freed_mm_hashes(),
             new_block_ids_to_zero=new_block_ids_to_zero,
         )
+        if trace_enabled:
+            scheduler_output.cpp_trace_records = list(cpp_trace_records.values())
 
         if self.connector is not None:
             meta = self._build_kv_connector_meta(self.connector, scheduler_output)

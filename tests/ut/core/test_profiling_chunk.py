@@ -78,6 +78,11 @@ class TestProfilingChunkConfig(TestBase):
         self.assertFalse(cfg.enabled)
         self.assertAlmostEqual(cfg.smooth_factor, 1.0)
         self.assertEqual(cfg.min_chunk, 4096)
+        self.assertFalse(cfg.trace_enabled)
+
+    def test_trace_enabled(self):
+        cfg = ProfilingChunkConfig({"trace_enabled": True})
+        self.assertTrue(cfg.trace_enabled)
 
     def test_invalid_smooth_factor_raises(self):
         with self.assertRaises(ValueError):
@@ -256,6 +261,9 @@ class TestProfilingChunkScheduler(TestBase):
         profiling_cfg.enabled = True
         profiling_cfg.smooth_factor = 0.8
         profiling_cfg.min_chunk = 256
+        profiling_cfg.need_timing = True
+        profiling_cfg.max_fit_chunk = 30
+        profiling_cfg.trace_enabled = False
         mock_get_ascend_config.return_value.scheduler_config.profiling_chunk_config = profiling_cfg
         mock_init_ascend_config.return_value.scheduler_config.short_request_first_config.enabled = False
 
@@ -412,6 +420,29 @@ class TestProfilingChunkScheduler(TestBase):
 
         output2 = scheduler.schedule()
         self.assertGreater(output2.total_num_scheduled_tokens, 0)
+
+    def test_trace_records_predicted_and_actual_chunk_sizes(self):
+        scheduler = self.create_scheduler()
+        scheduler.profiling_chunk_config.trace_enabled = True
+        scheduler.profiling_chunk_config.need_timing = False
+        manager = scheduler.profiling_chunk_manager
+        manager.predictor.is_ready = True
+        manager._profiling_done = True
+        manager.predictor.target_latency = 100.0
+        manager.predict_chunk_size = MagicMock(return_value=512)
+        manager.predict_time = MagicMock(return_value=42.0)
+
+        scheduler.add_request(create_requests(num_requests=1, num_tokens=2000)[0])
+        output = scheduler.schedule()
+
+        record = output.cpp_trace_records[0]
+        self.assertEqual(record["iteration"], 1)
+        self.assertEqual(record["req_id"], "0")
+        self.assertEqual(record["hist_seq_len"], 0)
+        self.assertEqual(record["remaining_prefill_tokens"], 2000)
+        self.assertEqual(record["predicted_chunk_size"], 512)
+        self.assertEqual(record["actual_scheduled_chunk_size"], 512)
+        self.assertEqual(record["predicted_latency_ms"], 42.0)
 
     def test_update_from_output(self):
         scheduler = self.create_scheduler()

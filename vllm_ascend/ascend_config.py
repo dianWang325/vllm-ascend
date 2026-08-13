@@ -709,6 +709,10 @@ class ProfilingChunkConfig:
         # the startup profiling model (avoids per-step sync overhead).
         self.need_timing: bool = config.get("need_timing", self.enabled)
         self.max_fit_chunk: int = int(config.get("max_fit_chunk", 30))
+        # Emit structured, per-iteration CPP diagnostics. Disabled by default
+        # because collecting and serializing these fields is on the scheduler
+        # and model-execution hot paths.
+        self.trace_enabled: bool = config.get("trace_enabled", False)
         self._validate()
 
     def _validate(self):
