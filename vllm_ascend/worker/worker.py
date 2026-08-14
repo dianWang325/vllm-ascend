@@ -871,9 +871,7 @@ class NPUWorker(WorkerBase):
                 "cudagraph_runtime_mode": CUDAGraphMode.NONE,
             }
 
-            if "profile_cpp" in inspect.signature(
-                self.model_runner._dummy_run
-            ).parameters:
+            if "profile_cpp" in inspect.signature(self.model_runner._dummy_run).parameters:
                 dummy_run_kwargs["profile_cpp"] = True
 
             self.model_runner._dummy_run(**dummy_run_kwargs)

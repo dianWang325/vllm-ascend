@@ -622,6 +622,7 @@
     - tests/ut/worker
     - tests/e2e/pull_request/one_card/model_runner_v2
     - tests/e2e/pull_request/two_card/model_runner_v2
+    - tests/e2e/pull_request/two_card/test_profiling_chunk_performance.py
     - tests/e2e/pull_request/four_card/model_runner_v2
     - tests/e2e/pull_request/four_card/test_qwen3_mrv2_eplb.py
 
@@ -819,6 +820,7 @@ estimated_times:
   tests/e2e/pull_request/two_card/test_gpt_oss_distributed.py: 180
   tests/e2e/pull_request/two_card/test_moe_routing_replay.py: 560
   tests/e2e/pull_request/two_card/test_prefix_caching.py: 420
+  tests/e2e/pull_request/two_card/test_profiling_chunk_performance.py: 160
   tests/e2e/pull_request/two_card/test_qwen3_30b_a3b.py: 260
   tests/e2e/pull_request/two_card/test_qwen3_5_35b_a3b_w8a8.py: 370
   tests/e2e/pull_request/two_card/test_qwen3_6_27b_fia.py: 570
