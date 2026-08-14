@@ -67,9 +67,7 @@ class TestNPUWorkerV2(TestBase):
         with patch.object(NPUWorker, "__init__", lambda self, **kwargs: None):
             worker = NPUWorker()
             worker.use_v2_model_runner = True
-            worker.scheduler_config = SimpleNamespace(
-                max_num_batched_tokens=1024
-            )
+            worker.scheduler_config = SimpleNamespace(max_num_batched_tokens=1024)
 
             model_runner = MagicMock()
             model_runner.max_num_reqs = 8
@@ -106,9 +104,7 @@ class TestNPUWorkerV2(TestBase):
         with patch.object(NPUWorker, "__init__", lambda self, **kwargs: None):
             worker = NPUWorker()
             worker.use_v2_model_runner = True
-            worker.scheduler_config = SimpleNamespace(
-                max_num_batched_tokens=1024
-            )
+            worker.scheduler_config = SimpleNamespace(max_num_batched_tokens=1024)
 
             model_runner = MagicMock()
             model_runner.max_num_reqs = 8
