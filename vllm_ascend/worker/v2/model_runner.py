@@ -222,6 +222,33 @@ class NPUModelRunner(GPUModelRunner):
         if self.model_config.enable_return_routed_experts:
             self.init_routed_experts_capturer()
 
+    def _start_profiling_chunk_timing(self, scheduler_output) -> None:
+        profiling_config = self.ascend_config.scheduler_config.profiling_chunk_config
+        if not profiling_config.need_timing:
+            return
+
+        if getattr(scheduler_output, "disable_profiling_timing", False):
+            profiling_config.need_timing = False
+            return
+
+        torch.npu.synchronize()
+        self._execution_start_time = time.perf_counter()
+
+    def _record_profiling_chunk_execution_time(self, output) -> None:
+        profiling_config = self.ascend_config.scheduler_config.profiling_chunk_config
+        if not profiling_config.need_timing or not hasattr(self, "_execution_start_time"):
+            return
+
+        torch.npu.synchronize()
+        execution_time_ms = (time.perf_counter() - self._execution_start_time) * 1000.0
+
+        # MRV2 may return AsyncOutput on the last PP rank.
+        # Preserve the timing on its inner ModelRunnerOutput so it reaches
+        # the scheduler after get_output().
+        model_runner_output = getattr(output, "model_runner_output", output)
+        if model_runner_output is not None:
+            model_runner_output.execution_time_ms = execution_time_ms
+
     @torch.inference_mode()
     def execute_model(
         self,
@@ -231,12 +258,7 @@ class NPUModelRunner(GPUModelRunner):
         skip_attn_for_dummy_run: bool = False,
         is_profile: bool = False,
     ):
-        if self.ascend_config.scheduler_config.profiling_chunk_config.need_timing:
-            if getattr(scheduler_output, "disable_profiling_timing", False):
-                self.ascend_config.scheduler_config.profiling_chunk_config.need_timing = False
-            else:
-                torch.npu.synchronize()
-                self._execution_start_time = time.perf_counter()
+        self._start_profiling_chunk_timing(scheduler_output)
         with flashcomm_dispatch_wrapper(self.vllm_config):
             output = super().execute_model(
                 scheduler_output,
@@ -275,20 +297,7 @@ class NPUModelRunner(GPUModelRunner):
     @torch.inference_mode()
     def sample_tokens(self, grammar_output):
         output = super().sample_tokens(grammar_output)
-
-        if self.ascend_config.scheduler_config.profiling_chunk_config.need_timing and hasattr(
-            self, "_execution_start_time"
-        ):
-            torch.npu.synchronize()
-            execution_time_ms = (time.perf_counter() - self._execution_start_time) * 1000.0
-
-            # MRV2 normally returns AsyncOutput on the last PP rank.
-            # Preserve the timing on its inner ModelRunnerOutput so it reaches
-            # the scheduler after get_output().
-            model_runner_output = getattr(output, "model_runner_output", output)
-            if model_runner_output is not None:
-                model_runner_output.execution_time_ms = execution_time_ms
-
+        self._record_profiling_chunk_execution_time(output)
         return output
 
     @torch.inference_mode()
