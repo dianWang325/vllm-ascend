@@ -32,9 +32,9 @@ def test_execute_model_starts_profiling_timer():
             "vllm_ascend.worker.v2.model_runner.enable_sp",
             return_value=False,
         ),
-        patch("vllm_ascend.worker.v2.model_runner.torch.npu.synchronize") as mock_synchronize,
+        patch("vllm_ascend.core.profiling_chunk_predictor.torch.npu.synchronize") as mock_synchronize,
         patch(
-            "vllm_ascend.worker.v2.model_runner.time.perf_counter",
+            "vllm_ascend.core.profiling_chunk_predictor.time.perf_counter",
             return_value=10.0,
         ),
     ):
@@ -66,8 +66,8 @@ def test_execute_model_disables_profiling_timer():
             "vllm_ascend.worker.v2.model_runner.enable_sp",
             return_value=False,
         ),
-        patch("vllm_ascend.worker.v2.model_runner.torch.npu.synchronize") as mock_synchronize,
-        patch("vllm_ascend.worker.v2.model_runner.time.perf_counter") as mock_perf_counter,
+        patch("vllm_ascend.core.profiling_chunk_predictor.torch.npu.synchronize") as mock_synchronize,
+        patch("vllm_ascend.core.profiling_chunk_predictor.time.perf_counter") as mock_perf_counter,
     ):
         runner.execute_model(scheduler_output)
 
@@ -92,9 +92,9 @@ def test_sample_tokens_records_execution_time(async_output):
             "sample_tokens",
             return_value=output,
         ) as mock_sample_tokens,
-        patch("vllm_ascend.worker.v2.model_runner.torch.npu.synchronize") as mock_synchronize,
+        patch("vllm_ascend.core.profiling_chunk_predictor.torch.npu.synchronize") as mock_synchronize,
         patch(
-            "vllm_ascend.worker.v2.model_runner.time.perf_counter",
+            "vllm_ascend.core.profiling_chunk_predictor.time.perf_counter",
             return_value=10.125,
         ),
     ):

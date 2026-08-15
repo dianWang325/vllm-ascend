@@ -28,9 +28,42 @@ The approach:
 """
 
 import math
+import time
 
 import numpy as np
+import torch
 from vllm.logger import logger
+
+
+def _start_profiling_chunk_timing(profiling_config, scheduler_output) -> float | None:
+    if not profiling_config.need_timing:
+        return None
+
+    if getattr(scheduler_output, "disable_profiling_timing", False):
+        profiling_config.need_timing = False
+        return None
+
+    torch.npu.synchronize()
+    return time.perf_counter()
+
+
+def _record_profiling_chunk_execution_time(
+    profiling_config,
+    execution_start_time: float | None,
+    output,
+) -> None:
+    if not profiling_config.need_timing or execution_start_time is None:
+        return
+
+    torch.npu.synchronize()
+    execution_time_ms = (time.perf_counter() - execution_start_time) * 1000.0
+
+    # MRV2 may return AsyncOutput on the last PP rank.
+    # Preserve the timing on its inner ModelRunnerOutput so it reaches
+    # the scheduler after get_output().
+    model_runner_output = getattr(output, "model_runner_output", output)
+    if model_runner_output is not None:
+        model_runner_output.execution_time_ms = execution_time_ms
 
 
 class ChunkSizePredictor:
