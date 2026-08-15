@@ -17,7 +17,6 @@
 # This file is a part of the vllm-ascend project.
 #
 
-import time
 from contextlib import contextmanager
 
 import numpy as np
@@ -50,6 +49,10 @@ from vllm_ascend.ascend_forward_context import (
     select_moe_comm_method,
     set_mc2_mask,
     set_mc2_tokens_capacity,
+)
+from vllm_ascend.core.profiling_chunk_predictor import (
+    _record_profiling_chunk_execution_time,
+    _start_profiling_chunk_timing,
 )
 from vllm_ascend.ops.rotary_embedding import set_cos_and_sin, update_cos_sin
 from vllm_ascend.utils import enable_sp, set_potential_max_tokens
@@ -220,33 +223,6 @@ class NPUModelRunner(GPUModelRunner):
                 self.block_tables,
             )
 
-    def _start_profiling_chunk_timing(self, scheduler_output) -> None:
-        profiling_config = self.ascend_config.scheduler_config.profiling_chunk_config
-        if not profiling_config.need_timing:
-            return
-
-        if getattr(scheduler_output, "disable_profiling_timing", False):
-            profiling_config.need_timing = False
-            return
-
-        torch.npu.synchronize()
-        self._execution_start_time = time.perf_counter()
-
-    def _record_profiling_chunk_execution_time(self, output) -> None:
-        profiling_config = self.ascend_config.scheduler_config.profiling_chunk_config
-        if not profiling_config.need_timing or not hasattr(self, "_execution_start_time"):
-            return
-
-        torch.npu.synchronize()
-        execution_time_ms = (time.perf_counter() - self._execution_start_time) * 1000.0
-
-        # MRV2 may return AsyncOutput on the last PP rank.
-        # Preserve the timing on its inner ModelRunnerOutput so it reaches
-        # the scheduler after get_output().
-        model_runner_output = getattr(output, "model_runner_output", output)
-        if model_runner_output is not None:
-            model_runner_output.execution_time_ms = execution_time_ms
-
     @torch.inference_mode()
     def execute_model(
         self,
@@ -256,7 +232,13 @@ class NPUModelRunner(GPUModelRunner):
         skip_attn_for_dummy_run: bool = False,
         is_profile: bool = False,
     ):
-        self._start_profiling_chunk_timing(scheduler_output)
+        profiling_config = self.ascend_config.scheduler_config.profiling_chunk_config
+        execution_start_time = _start_profiling_chunk_timing(
+            profiling_config,
+            scheduler_output,
+        )
+        if execution_start_time is not None:
+            self._execution_start_time = execution_start_time
         with flashcomm_dispatch_wrapper(self.vllm_config):
             output = super().execute_model(
                 scheduler_output,
@@ -295,7 +277,11 @@ class NPUModelRunner(GPUModelRunner):
     @torch.inference_mode()
     def sample_tokens(self, grammar_output):
         output = super().sample_tokens(grammar_output)
-        self._record_profiling_chunk_execution_time(output)
+        _record_profiling_chunk_execution_time(
+            self.ascend_config.scheduler_config.profiling_chunk_config,
+            getattr(self, "_execution_start_time", None),
+            output,
+        )
         return output
 
     @torch.inference_mode()
