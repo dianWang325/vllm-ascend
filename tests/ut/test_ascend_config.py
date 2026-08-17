@@ -26,6 +26,7 @@ from vllm_ascend.ascend_config import (
     AscendConfig,
     DyntraLBConfig,
     EplbConfig,
+    ProfilingChunkConfig,
     SchedulerConfig,
     ShortRequestFirstConfig,
     clear_ascend_config,
@@ -36,6 +37,21 @@ from vllm_ascend.utils import clear_enable_sp, enable_sp, shared_expert_dp_enabl
 
 
 class TestAscendConfig(TestBase):
+    def test_profiling_chunk_execution_mode_trace_defaults_off(self):
+        config = ProfilingChunkConfig({"enabled": True})
+
+        self.assertFalse(config.execution_mode_trace_enabled)
+
+    def test_profiling_chunk_execution_mode_trace_can_be_enabled(self):
+        config = ProfilingChunkConfig(
+            {
+                "enabled": True,
+                "execution_mode_trace_enabled": True,
+            }
+        )
+
+        self.assertTrue(config.execution_mode_trace_enabled)
+
     @staticmethod
     def _clean_up_ascend_config(func):
         def wrapper(*args, **kwargs):

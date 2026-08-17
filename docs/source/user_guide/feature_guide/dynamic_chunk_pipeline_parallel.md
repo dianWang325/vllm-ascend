@@ -200,6 +200,7 @@ curl http://<PROXY_IP>:8080/v1/chat/completions \
 | `min_chunk` | int | 4096 | Minimum chunk size for dynamic calculation |
 | `need_timing` | bool | True | Enable/disable Online Calibration |
 | `max_fit_chunk` | int | 30 | Number of chunk-time data for Online Calibration |
+| `execution_mode_trace_enabled` | bool | False | Emit bounded structured records for CPP startup and normal-inference execution modes. Intended for validating eager/graph isolation without per-iteration tracing. |
 
 ### Parameter Tuning
 
