@@ -18,7 +18,7 @@ def _make_runner(need_timing: bool = True):
     return runner
 
 
-def test_execute_model_starts_profiling_timer():
+def test_execute_model_records_profiling_time():
     runner = _make_runner()
     scheduler_output = SimpleNamespace(disable_profiling_timing=False)
 
@@ -35,14 +35,14 @@ def test_execute_model_starts_profiling_timer():
         patch("vllm_ascend.core.profiling_chunk_predictor.torch.npu.synchronize") as mock_synchronize,
         patch(
             "vllm_ascend.core.profiling_chunk_predictor.time.perf_counter",
-            return_value=10.0,
+            side_effect=[10.0, 10.125],
         ),
     ):
         output = runner.execute_model(scheduler_output)
 
     assert output is None
-    assert runner._execution_start_time == 10.0
-    mock_synchronize.assert_called_once_with()
+    assert runner._cpp_execution_time_ms == pytest.approx(125.0)
+    assert mock_synchronize.call_count == 2
     mock_execute_model.assert_called_once_with(
         scheduler_output,
         intermediate_tensors=None,
@@ -52,8 +52,9 @@ def test_execute_model_starts_profiling_timer():
     )
 
 
-def test_execute_model_disables_profiling_timer():
+def test_execute_model_disables_profiling_timer_and_clears_stale_time():
     runner = _make_runner()
+    runner._cpp_execution_time_ms = 123.0
     scheduler_output = SimpleNamespace(disable_profiling_timing=True)
 
     with (
@@ -73,34 +74,10 @@ def test_execute_model_disables_profiling_timer():
 
     profiling_config = runner.ascend_config.scheduler_config.profiling_chunk_config
     assert not profiling_config.need_timing
+    assert runner._cpp_execution_time_ms is None
     mock_synchronize.assert_not_called()
     mock_perf_counter.assert_not_called()
 
 
-@pytest.mark.parametrize("async_output", [False, True])
-def test_sample_tokens_records_execution_time(async_output):
-    runner = _make_runner()
-    runner._execution_start_time = 10.0
-
-    model_runner_output = SimpleNamespace()
-    output = SimpleNamespace(model_runner_output=model_runner_output) if async_output else model_runner_output
-    grammar_output = SimpleNamespace()
-
-    with (
-        patch.object(
-            GPUModelRunner,
-            "sample_tokens",
-            return_value=output,
-        ) as mock_sample_tokens,
-        patch("vllm_ascend.core.profiling_chunk_predictor.torch.npu.synchronize") as mock_synchronize,
-        patch(
-            "vllm_ascend.core.profiling_chunk_predictor.time.perf_counter",
-            return_value=10.125,
-        ),
-    ):
-        result = runner.sample_tokens(grammar_output)
-
-    assert result is output
-    assert model_runner_output.execution_time_ms == pytest.approx(125.0)
-    mock_synchronize.assert_called_once_with()
-    mock_sample_tokens.assert_called_once_with(grammar_output)
+def test_sample_tokens_is_inherited_from_upstream():
+    assert NPUModelRunner.sample_tokens is GPUModelRunner.sample_tokens

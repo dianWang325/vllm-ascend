@@ -118,3 +118,53 @@ class TestNPUWorkerV2(TestBase):
 
             self.assertEqual(model_runner.max_num_reqs, 8)
             self.assertEqual(mock_synchronize.call_count, 1)
+
+    def test_sample_tokens_v2_attaches_execution_time(self):
+        from vllm_ascend.worker.worker import NPUWorker
+
+        with patch.object(NPUWorker, "__init__", lambda self, **kwargs: None):
+            worker = NPUWorker()
+            worker.use_v2_model_runner = True
+
+            profiling_config = SimpleNamespace(need_timing=True)
+            model_runner = MagicMock()
+            model_runner.ascend_config = SimpleNamespace(
+                scheduler_config=SimpleNamespace(
+                    profiling_chunk_config=profiling_config,
+                )
+            )
+            model_runner._cpp_execution_time_ms = 125.0
+            model_runner_output = SimpleNamespace()
+            output = SimpleNamespace(model_runner_output=model_runner_output)
+            model_runner.sample_tokens.return_value = output
+            worker.model_runner = model_runner
+
+            grammar_output = SimpleNamespace()
+            result = worker.sample_tokens(grammar_output)
+
+            self.assertIs(result, output)
+            self.assertEqual(model_runner_output.execution_time_ms, 125.0)
+            self.assertIsNone(model_runner._cpp_execution_time_ms)
+            model_runner.sample_tokens.assert_called_once_with(grammar_output)
+
+    @patch(
+        "vllm_ascend.worker.worker._attach_profiling_chunk_execution_time",
+    )
+    def test_sample_tokens_v1_keeps_original_path(self, mock_attach):
+        from vllm_ascend.worker.worker import NPUWorker
+
+        with patch.object(NPUWorker, "__init__", lambda self, **kwargs: None):
+            worker = NPUWorker()
+            worker.use_v2_model_runner = False
+
+            model_runner = MagicMock()
+            output = SimpleNamespace()
+            model_runner.sample_tokens.return_value = output
+            worker.model_runner = model_runner
+
+            grammar_output = SimpleNamespace()
+            result = worker.sample_tokens(grammar_output)
+
+            self.assertIs(result, output)
+            mock_attach.assert_not_called()
+            model_runner.sample_tokens.assert_called_once_with(grammar_output)
