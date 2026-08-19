@@ -56,7 +56,7 @@ from vllm_ascend.core.profiling_chunk_execution_trace import (
     log_execution_mode_event,
 )
 from vllm_ascend.core.profiling_chunk_predictor import (
-    _record_profiling_chunk_execution_time,
+    _finish_profiling_chunk_timing,
     _start_profiling_chunk_timing,
 )
 from vllm_ascend.ops.rotary_embedding import set_cos_and_sin, update_cos_sin
@@ -249,13 +249,12 @@ class NPUModelRunner(GPUModelRunner):
         skip_attn_for_dummy_run: bool = False,
         is_profile: bool = False,
     ):
+        self._cpp_execution_time_ms = None
         profiling_config = self.ascend_config.scheduler_config.profiling_chunk_config
         execution_start_time = _start_profiling_chunk_timing(
             profiling_config,
             scheduler_output,
         )
-        if execution_start_time is not None:
-            self._execution_start_time = execution_start_time
         trace_execution_mode = getattr(profiling_config, "execution_mode_trace_enabled", False) is True
         trace_startup_profile = (
             trace_execution_mode and dummy_run and getattr(self, "_cpp_startup_profile_active", False)
@@ -324,15 +323,9 @@ class NPUModelRunner(GPUModelRunner):
                 aux_hidden_states=aux_hidden_states,
             )
 
-        return output
-
-    @torch.inference_mode()
-    def sample_tokens(self, grammar_output):
-        output = super().sample_tokens(grammar_output)
-        _record_profiling_chunk_execution_time(
-            self.ascend_config.scheduler_config.profiling_chunk_config,
-            getattr(self, "_execution_start_time", None),
-            output,
+        self._cpp_execution_time_ms = _finish_profiling_chunk_timing(
+            profiling_config,
+            execution_start_time,
         )
         return output
 

@@ -47,16 +47,27 @@ def _start_profiling_chunk_timing(profiling_config, scheduler_output) -> float |
     return time.perf_counter()
 
 
-def _record_profiling_chunk_execution_time(
+def _finish_profiling_chunk_timing(
     profiling_config,
     execution_start_time: float | None,
-    output,
-) -> None:
+) -> float | None:
     if not profiling_config.need_timing or execution_start_time is None:
-        return
+        return None
 
     torch.npu.synchronize()
-    execution_time_ms = (time.perf_counter() - execution_start_time) * 1000.0
+    return (time.perf_counter() - execution_start_time) * 1000.0
+
+
+def _attach_profiling_chunk_execution_time(
+    profiling_config,
+    model_runner,
+    output,
+) -> None:
+    execution_time_ms = getattr(model_runner, "_cpp_execution_time_ms", None)
+    model_runner._cpp_execution_time_ms = None
+
+    if not profiling_config.need_timing or execution_time_ms is None:
+        return
 
     # MRV2 may return AsyncOutput on the last PP rank.
     # Preserve the timing on its inner ModelRunnerOutput so it reaches

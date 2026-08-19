@@ -62,6 +62,9 @@ from vllm_ascend.batch_invariant import init_batch_invariance
 from vllm_ascend.core.profiling_chunk_execution_trace import (
     log_execution_mode_event,
 )
+from vllm_ascend.core.profiling_chunk_predictor import (
+    _attach_profiling_chunk_execution_time,
+)
 from vllm_ascend.cpu_binding import bind_cpus
 from vllm_ascend.device_allocator.camem import CaMemAllocator
 from vllm_ascend.device_allocator.sleep_mem_optimized import SleepWakeupManager
@@ -695,7 +698,16 @@ class NPUWorker(WorkerBase):
 
     @torch.inference_mode()
     def sample_tokens(self, grammar_output: "GrammarOutput") -> ModelRunnerOutput | AsyncModelRunnerOutput:
-        return self.model_runner.sample_tokens(grammar_output)
+        if not self.use_v2_model_runner:
+            return self.model_runner.sample_tokens(grammar_output)
+
+        output = self.model_runner.sample_tokens(grammar_output)
+        _attach_profiling_chunk_execution_time(
+            self.model_runner.ascend_config.scheduler_config.profiling_chunk_config,
+            self.model_runner,
+            output,
+        )
+        return output
 
     def load_model(self) -> None:
         if self.vllm_config.model_config.enable_sleep_mode:
