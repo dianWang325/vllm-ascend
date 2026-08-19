@@ -59,6 +59,9 @@ from vllm.v1.worker.workspace import init_workspace_manager
 import vllm_ascend.envs as envs_ascend
 from vllm_ascend.ascend_config import get_ascend_config, init_ascend_config
 from vllm_ascend.batch_invariant import init_batch_invariance
+from vllm_ascend.core.profiling_chunk_execution_trace import (
+    log_execution_mode_event,
+)
 from vllm_ascend.cpu_binding import bind_cpus
 from vllm_ascend.device_allocator.camem import CaMemAllocator
 from vllm_ascend.device_allocator.sleep_mem_optimized import SleepWakeupManager
@@ -861,6 +864,20 @@ class NPUWorker(WorkerBase):
         # Run a real model forward with attention enabled in eager mode.
         # _dummy_run handles PP internally (intermediate tensors, etc.).
         old_max_num_reqs = self.model_runner.max_num_reqs
+        profiling_config = getattr(
+            getattr(
+                getattr(self.model_runner, "ascend_config", None),
+                "scheduler_config",
+                None,
+            ),
+            "profiling_chunk_config",
+            None,
+        )
+        trace_execution_mode = getattr(profiling_config, "execution_mode_trace_enabled", False) is True
+        if trace_execution_mode:
+            self.model_runner._cpp_startup_profile_active = True
+            self.model_runner._cpp_profile_execution_mode = None
+            self.model_runner._cpp_profile_need_eager = None
         try:
             self.model_runner.max_num_reqs = 1
 
@@ -877,11 +894,37 @@ class NPUWorker(WorkerBase):
             self.model_runner._dummy_run(**dummy_run_kwargs)
         finally:
             self.model_runner.max_num_reqs = old_max_num_reqs
+            if trace_execution_mode:
+                self.model_runner._cpp_startup_profile_active = False
 
         # Synchronize after forward to ensure NPU operations complete
         torch.npu.synchronize()
 
         latency_ms = (time.perf_counter() - start) * 1000
+
+        if trace_execution_mode:
+            configured_mode = self.vllm_config.compilation_config.cudagraph_mode
+            trace_fields = dict(
+                runner="mrv2" if self.use_v2_model_runner else "mrv1",
+                num_tokens=num_tokens,
+                configured_cudagraph_mode=configured_mode.name,
+                actual_execution_mode=getattr(self.model_runner, "_cpp_profile_execution_mode", None),
+                need_eager=getattr(self.model_runner, "_cpp_profile_need_eager", None),
+                pp_rank=get_pp_group().rank_in_group,
+                tp_rank=get_tp_group().rank_in_group,
+                latency_ms=latency_ms,
+            )
+            if not getattr(self.model_runner, "_cpp_profile_warmup_observed", False):
+                self.model_runner._cpp_profile_warmup_observed = True
+                log_execution_mode_event("startup_profile_warmup_execution_mode", **trace_fields)
+            else:
+                sample_index = getattr(self.model_runner, "_cpp_profile_sample_index", 0)
+                self.model_runner._cpp_profile_sample_index = sample_index + 1
+                log_execution_mode_event(
+                    "startup_profile_execution_mode",
+                    sample_index=sample_index,
+                    **trace_fields,
+                )
 
         # Log for debugging in PP mode
         if not is_first_pp_rank:

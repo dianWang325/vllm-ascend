@@ -183,6 +183,7 @@ def build_attn_metadata(
     model_specific_attn_metadata: ModelSpecificAttnMetadata | None = None,
     for_cudagraph_capture: bool = False,
     causal: bool | Mapping[int, bool] = True,
+    is_prefilling: torch.Tensor | None = None,
 ) -> dict[str, Any]:
     """Build attention metadata for Ascend NPUs."""
     # TODO(Ronald1995): optimize AscendCommonAttentionMetadata.
@@ -219,6 +220,19 @@ def build_attn_metadata(
             if model_specific_attn_metadata is not None
             else {}
         )
+        if is_prefilling is not None:
+            common_attn_metadata_extra_kwargs.setdefault(
+                "is_prefilling", is_prefilling
+            )
+        elif for_cudagraph_capture:
+            # FULL graph captures use synthetic uniform-decode batches. DSA's
+            # split helper still requires the per-request flag when short
+            # extends are treated as prefills, so make the capture semantics
+            # explicit instead of leaving the inherited field unset.
+            common_attn_metadata_extra_kwargs.setdefault(
+                "is_prefilling",
+                torch.zeros(num_reqs, dtype=torch.bool, device="cpu"),
+            )
         common_attn_metadata = AscendCommonAttentionMetadata(
             query_start_loc=query_start_loc_gpu,
             query_start_loc_cpu=query_start_loc_cpu,
@@ -241,32 +255,39 @@ def build_attn_metadata(
 
         for attn_group in attn_groups[i]:
             attn_metadata_builder = attn_group.get_metadata_builder(0)
-            if for_cudagraph_capture:
+            attn_metadata_extra_kwargs = (
+                model_specific_attn_metadata.get_extra_attn_kwargs(
+                    attn_metadata_builder,
+                    num_reqs,
+                )
+                if model_specific_attn_metadata is not None
+                else {}
+            )
+            if isinstance(attn_metadata_builder, AscendDSAMetadataBuilder):
+                # The generic build_for_cudagraph_capture() path cannot
+                # provide the request-level dictionary required by DSA. A
+                # capture describes an independent synthetic batch, so avoid
+                # reusing DSA metadata from a previous capture size/group.
+                if for_cudagraph_capture:
+                    common_ratio_to_sas_metadata = {}
+                attn_metadata_extra_kwargs.update(
+                    num_reqs_actual=num_reqs,
+                    common_ratio_to_sas_metadata=common_ratio_to_sas_metadata,
+                    block_size=attn_group.kv_cache_spec.block_size,
+                )
+
+            if for_cudagraph_capture and not isinstance(attn_metadata_builder, AscendDSAMetadataBuilder):
                 metadata = attn_metadata_builder.build_for_cudagraph_capture(common_attn_metadata)
             else:
-                attn_metadata_extra_kwargs = (
-                    model_specific_attn_metadata.get_extra_attn_kwargs(
-                        attn_metadata_builder,
-                        num_reqs,
-                    )
-                    if model_specific_attn_metadata is not None
-                    else {}
-                )
-                if isinstance(attn_metadata_builder, AscendDSAMetadataBuilder):
-                    attn_metadata_extra_kwargs.update(
-                        num_reqs_actual=num_reqs,
-                        common_ratio_to_sas_metadata=common_ratio_to_sas_metadata,
-                        block_size=attn_group.kv_cache_spec.block_size,
-                    )
                 metadata = attn_metadata_builder.build(
                     common_prefix_len=0,
                     common_attn_metadata=common_attn_metadata,
                     **attn_metadata_extra_kwargs,
                 )
-                if isinstance(attn_metadata_builder, AscendDSAMetadataBuilder):
-                    # Preserve sharing even if a builder replaces one of the
-                    # dictionaries while constructing its metadata.
-                    common_ratio_to_sas_metadata = attn_metadata_builder.common_ratio_to_sas_metadata  # type: ignore[assignment]
+            if isinstance(attn_metadata_builder, AscendDSAMetadataBuilder):
+                # Preserve sharing even if a builder replaces one of the
+                # dictionaries while constructing its metadata.
+                common_ratio_to_sas_metadata = attn_metadata_builder.common_ratio_to_sas_metadata  # type: ignore[assignment]
             for layer_name in attn_group.layer_names:
                 attn_metadata[layer_name] = metadata
     return attn_metadata

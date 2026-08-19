@@ -3235,6 +3235,11 @@ class NPUModelRunner(GPUModelRunner):
         self.query_lens = torch.from_numpy(num_scheduled_tokens)
         num_tokens_unpadded = int(num_scheduled_tokens.sum())
         num_sampled_tokens = np.ones(num_reqs, dtype=np.int32)
+        cpp_need_eager = (
+            is_profile
+            or cudagraph_runtime_mode == CUDAGraphMode.NONE
+            or profile_cpp
+        )
         _cudagraph_mode, batch_desc, _, num_tokens_across_dp, _ = self._determine_batch_execution_and_padding(
             num_tokens=num_tokens_unpadded,
             num_reqs=num_reqs,
@@ -3242,7 +3247,7 @@ class NPUModelRunner(GPUModelRunner):
             max_num_scheduled_tokens=max_query_len,
             use_cascade_attn=False,
             allow_microbatching=allow_microbatching,
-            force_eager=is_profile or (cudagraph_runtime_mode == CUDAGraphMode.NONE) or profile_cpp,
+            force_eager=cpp_need_eager,
             # `force_uniform_decode` is used for cudagraph capture; because for
             # capturing mixed prefill-decode batches, we sometimes use
             # num_tokens == num_reqs which looks like a uniform decode batch to the
@@ -3271,6 +3276,16 @@ class NPUModelRunner(GPUModelRunner):
                 f"Cudagraph runtime mode mismatch in dummy_run. "
                 f"Expected {_cudagraph_mode}, but got {cudagraph_runtime_mode}."
             )
+        profiling_config = self.ascend_config.scheduler_config.profiling_chunk_config
+        if (
+            profile_cpp
+            and getattr(
+                profiling_config, "execution_mode_trace_enabled", False
+            )
+            is True
+        ):
+            self._cpp_profile_execution_mode = _cudagraph_mode.name
+            self._cpp_profile_need_eager = cpp_need_eager
         num_tokens_padded = batch_desc.num_tokens
         num_reqs_padded = batch_desc.num_reqs if batch_desc.num_reqs is not None else num_reqs
         if num_tokens_across_dp is not None and num_tokens_padded != num_tokens:

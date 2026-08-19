@@ -170,6 +170,7 @@ class _RecordingDSAMetadataBuilder(AscendDSAMetadataBuilder):
         call = {
             "common_attn_metadata": common_attn_metadata,
             "block_size": kwargs["block_size"],
+            "num_reqs_actual": kwargs["num_reqs_actual"],
             "common_ratio_to_sas_metadata": self.common_ratio_to_sas_metadata,
         }
         self.calls.append(call)
@@ -268,6 +269,7 @@ def test_mrv2_builds_shared_dsa_metadata_for_each_execution_mode(
             num_scheduled_tokens=torch.tensor([2, 3, 0, 0], dtype=torch.int32),
             seq_lens=torch.tensor([2, 3, 0, 0], dtype=torch.int32),
             seq_lens_np=np.array([2, 3, 0, 0], dtype=np.int32),
+            is_prefilling_np=np.array([True, True, False, False]),
             dcp_local_seq_lens=None,
             positions=torch.arange(8, dtype=torch.int32),
             attn_state=None,
@@ -288,6 +290,44 @@ def test_mrv2_builds_shared_dsa_metadata_for_each_execution_mode(
         common_metadata = call["common_attn_metadata"]
         assert common_metadata.num_actual_tokens == 5
         assert common_metadata.num_input_tokens == expected_input_tokens
+        if caller == "default":
+            assert common_metadata.is_prefilling is None
+        else:
+            assert common_metadata.is_prefilling.tolist() == (
+                [True, True, False, False]
+                if cudagraph_mode == CUDAGraphMode.FULL
+                else [True, True]
+            )
     cache_name = "common_ratio_to_sas_metadata"
     assert calls[0][cache_name] is calls[1][cache_name]
     assert calls[1][cache_name]["first_group"] is True
+
+
+def test_mrv2_cudagraph_capture_supplies_required_dsa_metadata():
+    layer_names, specs, calls, attn_groups, kv_cache_config = _make_dsa_metadata_groups()
+
+    metadata = attn_utils.build_attn_metadata(
+        attn_groups=attn_groups,
+        num_reqs=2,
+        num_tokens=2,
+        query_start_loc_gpu=torch.tensor([0, 1, 2], dtype=torch.int32),
+        query_start_loc_cpu=torch.tensor([0, 1, 2], dtype=torch.int32),
+        max_query_len=1,
+        seq_lens=torch.tensor([1, 1], dtype=torch.int32),
+        max_seq_len=8,
+        block_tables=(
+            torch.zeros((2, 1), dtype=torch.int32),
+            torch.zeros((2, 1), dtype=torch.int32),
+        ),
+        slot_mappings=torch.zeros((2, 2), dtype=torch.int32),
+        kv_cache_config=kv_cache_config,
+        seq_lens_np=np.array([1, 1], dtype=np.int32),
+        positions=torch.arange(2, dtype=torch.int32),
+        for_cudagraph_capture=True,
+    )
+
+    assert set(metadata) == set(layer_names)
+    assert [call["block_size"] for call in calls] == [spec.block_size for spec in specs]
+    assert [call["num_reqs_actual"] for call in calls] == [2, 2]
+    assert all(isinstance(call["common_ratio_to_sas_metadata"], dict) for call in calls)
+    assert all(not call["common_attn_metadata"].is_prefilling.any().item() for call in calls)

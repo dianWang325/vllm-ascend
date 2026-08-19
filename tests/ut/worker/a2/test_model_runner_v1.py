@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, call, patch
 
 import numpy as np
 import torch
+from vllm.config import CUDAGraphMode
 from vllm.model_executor.layers.attention import MLAAttention
 from vllm.model_executor.models.deepseek_v2 import DeepseekV32IndexerCache
 from vllm.v1.kv_cache_interface import (
@@ -18,6 +19,46 @@ from vllm_ascend.attention.utils import get_sfa_qsfa_packed_head_dim
 from vllm_ascend.core.kv_cache_interface import AscendMLAAttentionSpec, AscendSFAIndexerCacheSpec
 from vllm_ascend.utils import AscendDeviceType
 from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
+
+
+class _StopAfterExecutionModeEvidence:
+    @property
+    def num_tokens(self):
+        raise RuntimeError("execution mode evidence captured")
+
+
+class TestCPPExecutionModeEvidence(unittest.TestCase):
+    def test_profile_cpp_forces_and_records_final_eager_mode(self):
+        runner = NPUModelRunner.__new__(NPUModelRunner)
+        runner.scheduler_config = SimpleNamespace(
+            max_num_batched_tokens=1024,
+            max_num_seqs=16,
+        )
+        runner.dynamic_eplb = False
+        runner.dcp_size = 1
+        runner.ascend_config = SimpleNamespace(
+            scheduler_config=SimpleNamespace(profiling_chunk_config=SimpleNamespace(execution_mode_trace_enabled=True))
+        )
+        runner._determine_batch_execution_and_padding = MagicMock(
+            return_value=(
+                CUDAGraphMode.NONE,
+                _StopAfterExecutionModeEvidence(),
+                None,
+                None,
+                None,
+            )
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "execution mode evidence captured"):
+            runner._dummy_run(
+                16,
+                cudagraph_runtime_mode=CUDAGraphMode.NONE,
+                profile_cpp=True,
+            )
+
+        self.assertTrue(runner._determine_batch_execution_and_padding.call_args.kwargs["force_eager"])
+        self.assertEqual(runner._cpp_profile_execution_mode, "NONE")
+        self.assertTrue(runner._cpp_profile_need_eager)
 
 
 class TestNPUModelRunnerKVCache(unittest.TestCase):

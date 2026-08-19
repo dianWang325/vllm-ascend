@@ -709,6 +709,10 @@ class ProfilingChunkConfig:
         # the startup profiling model (avoids per-step sync overhead).
         self.need_timing: bool = config.get("need_timing", self.enabled)
         self.max_fit_chunk: int = int(config.get("max_fit_chunk", 30))
+        # Emits bounded, structured records that prove CPP startup profiling
+        # remains eager even when normal inference uses ACLGraph. This is
+        # deliberately independent from per-iteration performance tracing.
+        self.execution_mode_trace_enabled: bool = config.get("execution_mode_trace_enabled", False)
         self._validate()
 
     def _validate(self):

@@ -17,12 +17,14 @@
 # This file is a part of the vllm-ascend project.
 #
 
+from collections.abc import Callable
 from contextlib import contextmanager
 
 import numpy as np
 import torch
 from vllm.config import VllmConfig
 from vllm.config.compilation import CompilationMode, CUDAGraphMode
+from vllm.distributed.parallel_state import get_pp_group, get_tp_group
 from vllm.sequence import IntermediateTensors
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.kv_cache_interface import KVCacheConfig
@@ -50,6 +52,9 @@ from vllm_ascend.ascend_forward_context import (
     set_mc2_mask,
     set_mc2_tokens_capacity,
 )
+from vllm_ascend.core.profiling_chunk_execution_trace import (
+    log_execution_mode_event,
+)
 from vllm_ascend.core.profiling_chunk_predictor import (
     _record_profiling_chunk_execution_time,
     _start_profiling_chunk_timing,
@@ -73,14 +78,19 @@ from vllm_ascend.worker.v2.utils import torch_cuda_wrapper
 
 # TODO: remove this wrapper when vllm-ascend supports sequence parallel on model runner v2.
 @contextmanager
-def flashcomm_dispatch_wrapper(vllm_config: VllmConfig):
+def flashcomm_dispatch_wrapper(
+    vllm_config: VllmConfig,
+    trace_callback: Callable[[BatchExecutionDescriptor, bool], None] | None = None,
+    force_eager: bool = False,
+):
     """Pad batches before v2 selects an eager or graph execution shape.
 
     FlashComm1 reduce-scatter requires the token dimension to be divisible by
     tensor parallel size. Padding in ``prepare_inputs`` is too late for full
     graphs because their replay shape has already been selected by then.
     """
-    if not enable_sp(vllm_config):
+    sequence_parallel_enabled = enable_sp(vllm_config)
+    if not sequence_parallel_enabled and trace_callback is None:
         yield
         return
 
@@ -97,8 +107,10 @@ def flashcomm_dispatch_wrapper(vllm_config: VllmConfig):
         need_eager=False,
         num_active_loras=0,
     ):
-        num_tokens = (num_tokens + tp_size - 1) // tp_size * tp_size
-        return original_dispatch(
+        if sequence_parallel_enabled:
+            num_tokens = (num_tokens + tp_size - 1) // tp_size * tp_size
+        need_eager = need_eager or force_eager
+        result = original_dispatch(
             cudagraph_manager,
             num_reqs,
             num_tokens,
@@ -108,6 +120,9 @@ def flashcomm_dispatch_wrapper(vllm_config: VllmConfig):
             need_eager=need_eager,
             num_active_loras=num_active_loras,
         )
+        if trace_callback is not None:
+            trace_callback(result[0], need_eager)
+        return result
 
     vllm_model_runner.dispatch_cg_and_sync_dp = dispatch_with_flashcomm_padding
     try:
@@ -239,7 +254,42 @@ class NPUModelRunner(GPUModelRunner):
         )
         if execution_start_time is not None:
             self._execution_start_time = execution_start_time
-        with flashcomm_dispatch_wrapper(self.vllm_config):
+        trace_execution_mode = getattr(profiling_config, "execution_mode_trace_enabled", False) is True
+        trace_startup_profile = (
+            trace_execution_mode and dummy_run and getattr(self, "_cpp_startup_profile_active", False)
+        )
+        trace_normal_inference = trace_execution_mode and not dummy_run and not is_profile
+
+        def capture_execution_mode(batch_desc: BatchExecutionDescriptor, need_eager: bool) -> None:
+            actual_mode = batch_desc.cg_mode.name
+            if trace_startup_profile:
+                self._cpp_profile_execution_mode = actual_mode
+                self._cpp_profile_need_eager = need_eager
+                return
+            if not trace_normal_inference:
+                return
+            observed = getattr(self, "_cpp_inference_execution_modes_traced", set())
+            observation = (actual_mode, bool(need_eager))
+            if observation in observed:
+                return
+            observed.add(observation)
+            self._cpp_inference_execution_modes_traced = observed
+            log_execution_mode_event(
+                "inference_execution_mode_observed",
+                runner="mrv2",
+                configured_cudagraph_mode=(self.compilation_config.cudagraph_mode.name),
+                actual_execution_mode=actual_mode,
+                need_eager=bool(need_eager),
+                pp_rank=get_pp_group().rank_in_group,
+                tp_rank=get_tp_group().rank_in_group,
+            )
+
+        trace_callback = capture_execution_mode if trace_startup_profile or trace_normal_inference else None
+        with flashcomm_dispatch_wrapper(
+            self.vllm_config,
+            trace_callback,
+            force_eager=trace_startup_profile,
+        ):
             output = super().execute_model(
                 scheduler_output,
                 intermediate_tensors=intermediate_tensors,
