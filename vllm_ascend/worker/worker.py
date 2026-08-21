@@ -232,7 +232,8 @@ class NPUWorker(WorkerBase):
             model = self.model_runner.model
             self._sleep_saved_buffers = {name: buffer.cpu().clone() for name, buffer in model.named_buffers()}
 
-        cleanup_enabled = getattr(get_ascend_config(), "enable_sleep_mode_extra_cleanup", False)
+        rl_config = get_ascend_config().rl_config
+        cleanup_enabled = rl_config.enabled and rl_config.sleep_mode_extra_cleanup
         if cleanup_enabled:
             self.sleep_wakeup_manager.sleep()
 
@@ -255,7 +256,9 @@ class NPUWorker(WorkerBase):
         if nz_mode:
             raise ValueError(
                 "FRACTAL_NZ mode is enabled. This may cause model parameter precision issues "
-                "in the RL scenarios. Please set weight_nz_mode=0 via --additional-config."
+                "in the RL scenarios. Please set weight_nz_mode=0 via --additional-config, "
+                "or enable additional_config.rl_config (enabled: true) which disables NZ "
+                "automatically."
             )
         allocator = CaMemAllocator.get_instance()
         allocator.wake_up(tags=tags)
@@ -271,7 +274,8 @@ class NPUWorker(WorkerBase):
         if tags is None or "kv_cache" in tags:
             self.model_runner.post_kv_cache_wake_up()
 
-        cleanup_enabled = getattr(get_ascend_config(), "enable_sleep_mode_extra_cleanup", False)
+        rl_config = get_ascend_config().rl_config
+        cleanup_enabled = rl_config.enabled and rl_config.sleep_mode_extra_cleanup
         if cleanup_enabled:
             self.sleep_wakeup_manager.wakeup(tags)
 
@@ -289,11 +293,12 @@ class NPUWorker(WorkerBase):
         self.weight_transfer_engine.init_transfer_engine(typed_init_info)
 
     def _check_nz_disabled(self) -> None:
-        if envs_ascend.VLLM_ASCEND_ENABLE_NZ:
+        if get_ascend_config().weight_nz_mode:
             raise ValueError(
                 "FRACTAL_NZ mode is enabled. This may cause model parameter "
-                "precision issues in the RL scenarios. Please set "
-                "VLLM_ASCEND_ENABLE_NZ=0."
+                "precision issues in the RL scenarios. Please set weight_nz_mode=0 "
+                "via --additional-config, or enable additional_config.rl_config "
+                "(enabled: true) which disables NZ automatically."
             )
 
     def start_weight_update(self) -> None:
@@ -757,6 +762,10 @@ class NPUWorker(WorkerBase):
         for size in sorted(warmup_sizes, reverse=True):
             logger.info("Compile and warming up model for size %d", size)
             self.model_runner._dummy_run(size)
+
+        from vllm_ascend.model_executor.warmup.kernel_warmup import kernel_warmup
+
+        kernel_warmup(self)
 
         npugraph_memory_bytes = 0
         if not self.model_config.enforce_eager:

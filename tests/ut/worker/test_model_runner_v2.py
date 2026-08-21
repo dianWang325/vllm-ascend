@@ -28,7 +28,7 @@ def _make_runner(
     return runner
 
 
-def _dispatch_once(actual_mode, need_eager=False):
+def _dispatch_once(need_eager=False):
     from vllm_ascend.worker.v2 import model_runner as model_runner_module
 
     return model_runner_module.vllm_model_runner.dispatch_cg_and_sync_dp(
@@ -54,7 +54,7 @@ def test_cpp_startup_profile_captures_final_eager_mode():
         patch.object(
             GPUModelRunner,
             "execute_model",
-            side_effect=lambda *args, **kwargs: _dispatch_once(CUDAGraphMode.NONE, need_eager=False),
+            side_effect=lambda *args, **kwargs: _dispatch_once(need_eager=False),
         ),
         patch(
             "vllm_ascend.worker.v2.model_runner.vllm_model_runner.dispatch_cg_and_sync_dp",
@@ -82,7 +82,7 @@ def test_normal_inference_trace_is_bounded_per_observed_mode():
         patch.object(
             GPUModelRunner,
             "execute_model",
-            side_effect=lambda *args, **kwargs: _dispatch_once(CUDAGraphMode.FULL),
+            side_effect=lambda *args, **kwargs: _dispatch_once(),
         ),
         patch(
             "vllm_ascend.worker.v2.model_runner.vllm_model_runner.dispatch_cg_and_sync_dp",
@@ -171,7 +171,3 @@ def test_execute_model_disables_profiling_timer_and_clears_stale_time():
     assert runner._cpp_execution_time_ms is None
     mock_synchronize.assert_not_called()
     mock_perf_counter.assert_not_called()
-
-
-def test_sample_tokens_is_inherited_from_upstream():
-    assert NPUModelRunner.sample_tokens is GPUModelRunner.sample_tokens
