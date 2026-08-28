@@ -432,8 +432,8 @@ class TestProfilingChunkScheduler(TestBase):
         self.assertTrue(scheduler.profiling_chunk_manager.is_ready)
         self.assertFalse(scheduler.profiling_chunk_manager._set_time_done)
 
-    def test_run_profiling_chunk_init_failure_with_srf_does_not_lock_target(self):
-        scheduler = self.create_scheduler(srf_enabled=True)
+    def test_run_profiling_chunk_init_failure(self):
+        scheduler = self.create_scheduler()
         mock_executor = MagicMock()
         mock_executor.collective_rpc.return_value = []
 
