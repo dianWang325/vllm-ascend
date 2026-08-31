@@ -61,11 +61,12 @@ def test_profiling_chunk_ttft_performance(
 
     # Keep all runtime settings identical between MRV1 and MRV2. Only the
     # model-runner selector changes.
-    with patch.dict(
-        os.environ,
-        {"VLLM_USE_V2_MODEL_RUNNER": use_v2_model_runner},
-    ):
-        with VllmRunner(
+    with (
+        patch.dict(
+            os.environ,
+            {"VLLM_USE_V2_MODEL_RUNNER": use_v2_model_runner},
+        ),
+        VllmRunner(
             MODEL,
             max_model_len=70000,
             tensor_parallel_size=2,
@@ -95,33 +96,34 @@ def test_profiling_chunk_ttft_performance(
                     "original_max_position_embeddings": 262144,
                 }
             },
-        ) as vllm_model:
-            # With max_tokens=1, total latency ≈ prefill time ≈ TTFT
-            prompts = [INPUT_64K_TOKENS]
+        ) as vllm_model,
+    ):
+        # With max_tokens=1, total latency ≈ prefill time ≈ TTFT
+        prompts = [INPUT_64K_TOKENS]
 
-            # ── Warmup ──────────────────────────────────────────────────────
-            for _ in range(NUM_WARMUP):
-                vllm_model.generate_greedy(prompts, max_tokens=1)
+        # ── Warmup ──────────────────────────────────────────────────────
+        for _ in range(NUM_WARMUP):
+            vllm_model.generate_greedy(prompts, max_tokens=1)
 
-            # ── Measurement ─────────────────────────────────────────────────
-            ttfts: list[float] = []
-            for _ in range(NUM_TEST):
-                start = time.perf_counter()
-                vllm_model.generate_greedy(prompts, max_tokens=1)
-                ttfts.append(time.perf_counter() - start)
+        # ── Measurement ─────────────────────────────────────────────────
+        ttfts: list[float] = []
+        for _ in range(NUM_TEST):
+            start = time.perf_counter()
+            vllm_model.generate_greedy(prompts, max_tokens=1)
+            ttfts.append(time.perf_counter() - start)
 
-            median_ttft = statistics.median(ttfts)
-            ttft_str = ", ".join(f"{t:.2f}s" for t in ttfts)
-            print(
-                f"\n[profiling_chunk perf][{runner_name}] "
-                f"TTFT per request: [{ttft_str}]"
-                f"\n[profiling_chunk perf][{runner_name}] "
-                f"Median TTFT: {median_ttft:.2f}s  "
-                f"(baseline: {BASELINE_TTFT_S}s)"
-            )
+        median_ttft = statistics.median(ttfts)
+        ttft_str = ", ".join(f"{t:.2f}s" for t in ttfts)
+        print(
+            f"\n[profiling_chunk perf][{runner_name}] "
+            f"TTFT per request: [{ttft_str}]"
+            f"\n[profiling_chunk perf][{runner_name}] "
+            f"Median TTFT: {median_ttft:.2f}s  "
+            f"(baseline: {BASELINE_TTFT_S}s)"
+        )
 
-            assert median_ttft <= BASELINE_TTFT_S, (
-                f"[{runner_name}] TTFT performance regression: "
-                f"median TTFT {median_ttft:.2f}s exceeds baseline "
-                f"{BASELINE_TTFT_S}s. Individual TTFTs: [{ttft_str}]"
-            )
+        assert median_ttft <= BASELINE_TTFT_S, (
+            f"[{runner_name}] TTFT performance regression: "
+            f"median TTFT {median_ttft:.2f}s exceeds baseline "
+            f"{BASELINE_TTFT_S}s. Individual TTFTs: [{ttft_str}]"
+        )
