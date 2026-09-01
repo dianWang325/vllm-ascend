@@ -4,8 +4,9 @@ Measures Time-To-First-Token (TTFT) on 64k-token prefill requests with
 profiling_chunk_config enabled. The test runs against Qwen3-30B-A3B
 served with PP=2, TP=2 (4 NPU cards total).
 
-The same scenario is executed once with Model Runner V1 and once with
-Model Runner V2. The only configuration difference between the two runs
+The same scenario is executed with Model Runner V1 and Model Runner V2,
+both with Short Request First (SRF) disabled and enabled. Within each SRF
+mode, the only configuration difference between the two model-runner runs
 is VLLM_USE_V2_MODEL_RUNNER.
 
 Test flow:
@@ -40,10 +41,12 @@ BASELINE_TTFT_S = 5.45
 
 
 @pytest.mark.parametrize(
-    "use_v2_model_runner",
+    ("use_v2_model_runner", "enable_srf"),
     [
-        pytest.param("0", id="MRV1"),
-        pytest.param("1", id="MRV2"),
+        pytest.param("0", False, id="MRV1"),
+        pytest.param("1", False, id="MRV2"),
+        pytest.param("0", True, id="MRV1-SRF"),
+        pytest.param("1", True, id="MRV2-SRF"),
     ],
 )
 @patch.dict(
@@ -56,16 +59,14 @@ BASELINE_TTFT_S = 5.45
 @wait_until_npu_memory_free()
 def test_profiling_chunk_ttft_performance(
     use_v2_model_runner: str,
+    enable_srf: bool,
 ) -> None:
     runner_name = "MRV2" if use_v2_model_runner == "1" else "MRV1"
+    scenario_name = f"{runner_name}+SRF" if enable_srf else runner_name
 
-    # Keep all runtime settings identical between MRV1 and MRV2. Only the
-    # model-runner selector changes.
+    # Keep all other runtime settings identical across cases.
     with (
-        patch.dict(
-            os.environ,
-            {"VLLM_USE_V2_MODEL_RUNNER": use_v2_model_runner},
-        ),
+        patch.dict(os.environ, {"VLLM_USE_V2_MODEL_RUNNER": use_v2_model_runner}),
         VllmRunner(
             MODEL,
             max_model_len=70000,
@@ -84,6 +85,9 @@ def test_profiling_chunk_ttft_performance(
                     "profiling_chunk_config": {
                         "enabled": True,
                         "smooth_factor": 0.9,
+                    },
+                    "short_request_first_config": {
+                        "enabled": enable_srf,
                     },
                 },
                 "enable_cpu_binding": False,
@@ -115,15 +119,15 @@ def test_profiling_chunk_ttft_performance(
         median_ttft = statistics.median(ttfts)
         ttft_str = ", ".join(f"{t:.2f}s" for t in ttfts)
         print(
-            f"\n[profiling_chunk perf][{runner_name}] "
+            f"\n[profiling_chunk perf][{scenario_name}] "
             f"TTFT per request: [{ttft_str}]"
-            f"\n[profiling_chunk perf][{runner_name}] "
+            f"\n[profiling_chunk perf][{scenario_name}] "
             f"Median TTFT: {median_ttft:.2f}s  "
             f"(baseline: {BASELINE_TTFT_S}s)"
         )
 
         assert median_ttft <= BASELINE_TTFT_S, (
-            f"[{runner_name}] TTFT performance regression: "
+            f"[{scenario_name}] TTFT performance regression: "
             f"median TTFT {median_ttft:.2f}s exceeds baseline "
             f"{BASELINE_TTFT_S}s. Individual TTFTs: [{ttft_str}]"
         )
