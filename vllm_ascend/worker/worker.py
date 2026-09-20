@@ -636,9 +636,13 @@ class NPUWorker(WorkerBase):
             memory_info = getattr(self, "_gva_layerwise_memory_info", None)
             if memory_info is None:
                 num_layers = self.model_config.get_num_layers(self.parallel_config)
-                layout = build_layerwise_cache_layout(num_layers, extra_config)
-                num_buffer_assignments = len(layout.storage_indices)
-                factor = num_layers / num_buffer_assignments if layout.has_layer_reuse else 1.0
+                model_type = getattr(getattr(self.model_config, "hf_text_config", None), "model_type", None)
+                if model_type == "deepseek_v4":
+                    num_buffer_assignments, factor = num_layers, 1.0
+                else:
+                    layout = build_layerwise_cache_layout(num_layers, extra_config)
+                    num_buffer_assignments = len(layout.storage_indices)
+                    factor = num_layers / num_buffer_assignments if layout.has_layer_reuse else 1.0
             else:
                 num_layers, num_buffer_assignments, factor = memory_info
             if factor != 1.0:
@@ -1082,6 +1086,11 @@ class NPUWorker(WorkerBase):
         physical_layers = {get_layerwise_physical_layer_index(layer_name, base_layers) for layer_name in kv_cache_spec}
         num_layers = len(physical_layers)
         if num_layers < base_layers:
+            return num_layers, num_layers, 1.0
+        if any(getattr(spec, "model_version", None) == "deepseek_v4" for spec in kv_cache_spec.values()):
+            # The DSV4 planner already packs all cache groups into one backing
+            # tensor. Layerwise reuse reduces its tuple slots at fixed num_blocks;
+            # scaling the input budget would over-allocate that shared backing.
             return num_layers, num_layers, 1.0
         reuse_layout = build_layerwise_reuse_layout(
             kv_cache_spec,

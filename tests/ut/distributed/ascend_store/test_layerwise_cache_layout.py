@@ -1,3 +1,4 @@
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -18,6 +19,7 @@ from vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.layerwise_cache_la
     get_layerwise_physical_layer_index,
     get_layerwise_reuse_config,
 )
+from vllm_ascend.patch.platform.patch_kv_cache_utils import _get_kv_cache_config_deepseek_v4_main
 from vllm_ascend.utils import get_kv_cache_tensor_layers, vllm_version_is
 
 
@@ -57,6 +59,60 @@ def _make_vllm_config(num_layers: int, num_shared_buffers: int):
         model_config=model_config,
         parallel_config=MagicMock(),
     )
+
+
+def _make_dsv4_packed_config(monkeypatch, *, same_page_size: bool = False, with_mtp: bool = False):
+    main_spec = AscendMLAAttentionSpec(
+        block_size=2,
+        num_kv_heads=1,
+        head_size=8,
+        dtype=torch.int8,
+        model_version="deepseek_v4",
+        tokens_per_state=1,
+    )
+    small_spec = AscendMLAAttentionSpec(
+        block_size=2,
+        num_kv_heads=1,
+        head_size=8 if same_page_size else 4,
+        dtype=torch.int8,
+        model_version="deepseek_v4",
+        tokens_per_state=1,
+    )
+    layer_names = [f"model.layers.{layer}.self_attn" for layer in range(4)]
+    full_mla_specs = {
+        name: spec
+        for prefix in layer_names
+        for name, spec in (
+            (f"{prefix}.attn", main_spec),
+            (f"{prefix}.indexer.k_cache", small_spec),
+        )
+    }
+    if with_mtp:
+        full_mla_specs["model.mtp.0.self_attn.attn"] = main_spec
+    group_specs = [full_mla_specs]
+    for suffix, spec in (
+        ("compressor.state_cache", main_spec),
+        ("indexer.compressor.state_cache", small_spec),
+        ("swa_cache", main_spec),
+    ):
+        group_specs.append({f"{prefix}.{suffix}": spec for prefix in layer_names})
+    groups = [
+        SimpleNamespace(
+            layer_names=list(specs),
+            kv_cache_spec=UniformTypeKVCacheSpecs(block_size=2, kv_cache_specs=specs),
+        )
+        for specs in group_specs
+    ]
+    monkeypatch.setattr(
+        "vllm_ascend.patch.platform.patch_kv_cache_utils.may_override_num_blocks",
+        lambda _config, _num_blocks: 3,
+    )
+    num_blocks, tensors = _get_kv_cache_config_deepseek_v4_main(SimpleNamespace(), groups, 1)
+    return SimpleNamespace(num_blocks=num_blocks, kv_cache_groups=groups, kv_cache_tensors=tensors)
+
+
+def _dsv4_views_by_name(kv_cache_config):
+    return {name: tensor for tensor in kv_cache_config.kv_cache_tensors for name in tensor.layers}
 
 
 def test_no_reuse_skips_topology_validation():
@@ -587,3 +643,126 @@ def test_packed_cache_tensor_descriptors_are_rejected():
             kv_cache_config,
             _make_vllm_config(3, 1),
         )
+
+
+@pytest.mark.skipif(vllm_version_is("0.28.0"), reason="DSV4 shared backing needs the main KVCacheTensor API")
+@pytest.mark.parametrize("same_page_size,old_slots,new_slots", [(False, 4, 2), (True, 8, 4)])
+def test_dsv4_packed_reuse_preserves_group_and_component_geometry(
+    monkeypatch, same_page_size, old_slots, new_slots
+):
+    kv_cache_config = _make_dsv4_packed_config(monkeypatch, same_page_size=same_page_size)
+    old_size = kv_cache_config.kv_cache_tensors[0].size
+    old_num_blocks = kv_cache_config.num_blocks
+
+    apply_layerwise_kv_cache_plan(kv_cache_config, _make_vllm_config(4, 1))
+
+    views = _dsv4_views_by_name(kv_cache_config)
+    expected_names = {name for group in kv_cache_config.kv_cache_groups for name in group.layer_names}
+    assert set(views) == expected_names
+    assert kv_cache_config.num_blocks == old_num_blocks
+    assert {tensor.size for tensor in kv_cache_config.kv_cache_tensors} == {old_size * new_slots // old_slots}
+
+    def offset(layer, role):
+        return views[f"model.layers.{layer}.self_attn.{role}"].offset
+
+    # Identical roles from different physical layers share a tuple slot.
+    for role in (
+        "attn",
+        "indexer.k_cache",
+        "compressor.state_cache",
+        "indexer.compressor.state_cache",
+        "swa_cache",
+    ):
+        assert offset(1, role) == offset(2, role) == offset(3, role)
+        assert offset(0, role) != offset(1, role)
+
+    # Different cache groups may alias a tuple slot: their block IDs are disjoint.
+    assert offset(0, "attn") == offset(0, "compressor.state_cache")
+    assert offset(0, "attn") == offset(0, "swa_cache")
+    aliased_role = "attn" if same_page_size else "indexer.k_cache"
+    assert offset(0, aliased_role) == offset(0, "indexer.compressor.state_cache")
+    # Components in the same group with overlapping block IDs must not alias.
+    assert offset(0, "attn") != offset(0, "indexer.k_cache")
+    for tensor in kv_cache_config.kv_cache_tensors:
+        assert tensor.layer_stride == 0
+        assert sum(
+            all(name in group.layer_names for name in tensor.layers) for group in kv_cache_config.kv_cache_groups
+        ) == 1
+        for name in tensor.layers:
+            spec = next(
+                group.kv_cache_spec.kv_cache_specs[name]
+                for group in kv_cache_config.kv_cache_groups
+                if name in group.layer_names
+            )
+            assert tensor.block_stride == spec.page_size_bytes
+            assert tensor.offset + old_num_blocks * tensor.block_stride <= tensor.size
+
+
+@pytest.mark.skipif(vllm_version_is("0.28.0"), reason="DSV4 shared backing needs the main KVCacheTensor API")
+def test_dsv4_packed_reuse_keeps_mtp_tail_independent(monkeypatch):
+    kv_cache_config = _make_dsv4_packed_config(monkeypatch, with_mtp=True)
+    old_size = kv_cache_config.kv_cache_tensors[0].size
+
+    apply_layerwise_kv_cache_plan(kv_cache_config, _make_vllm_config(4, 1))
+
+    views = _dsv4_views_by_name(kv_cache_config)
+    mtp_view = views["model.mtp.0.self_attn.attn"]
+    assert mtp_view.layers == ["model.mtp.0.self_attn.attn"]
+    assert mtp_view.offset > max(
+        tensor.offset for tensor in kv_cache_config.kv_cache_tensors if tensor is not mtp_view
+    )
+    assert {tensor.size for tensor in kv_cache_config.kv_cache_tensors} == {old_size * 3 // 5}
+
+
+@pytest.mark.skipif(vllm_version_is("0.28.0"), reason="DSV4 shared backing needs the main KVCacheTensor API")
+def test_dsv4_packed_reuse_rejects_unexpected_geometry_atomically(monkeypatch):
+    kv_cache_config = _make_dsv4_packed_config(monkeypatch)
+    original_tensors = kv_cache_config.kv_cache_tensors
+    original_tensors[0] = replace(original_tensors[0], offset=original_tensors[0].offset + 1)
+
+    with pytest.raises(ValueError, match="packed view geometry"):
+        apply_layerwise_kv_cache_plan(kv_cache_config, _make_vllm_config(4, 1))
+
+    assert kv_cache_config.kv_cache_tensors is original_tensors
+
+
+@pytest.mark.skipif(vllm_version_is("0.28.0"), reason="DSV4 shared backing needs the main KVCacheTensor API")
+def test_dsv4_single_packed_descriptor_is_compacted(monkeypatch):
+    spec = AscendMLAAttentionSpec(
+        block_size=2,
+        num_kv_heads=1,
+        head_size=8,
+        dtype=torch.int8,
+        model_version="deepseek_v4",
+        tokens_per_state=1,
+    )
+    names = [f"model.layers.{layer}.self_attn.attn" for layer in range(4)]
+    group = SimpleNamespace(
+        layer_names=names,
+        kv_cache_spec=UniformTypeKVCacheSpecs(block_size=2, kv_cache_specs=dict.fromkeys(names, spec)),
+    )
+    monkeypatch.setattr(
+        "vllm_ascend.patch.platform.patch_kv_cache_utils.may_override_num_blocks",
+        lambda _config, _num_blocks: 3,
+    )
+    num_blocks, tensors = _get_kv_cache_config_deepseek_v4_main(SimpleNamespace(), [group], 1)
+    assert len(tensors) == 1
+    old_size = tensors[0].size
+    kv_cache_config = SimpleNamespace(num_blocks=num_blocks, kv_cache_groups=[group], kv_cache_tensors=tensors)
+
+    apply_layerwise_kv_cache_plan(kv_cache_config, _make_vllm_config(4, 1))
+
+    assert kv_cache_config.num_blocks == 3
+    assert len(kv_cache_config.kv_cache_tensors) == 2
+    assert {tensor.size for tensor in kv_cache_config.kv_cache_tensors} == {old_size // 2}
+    assert set(_dsv4_views_by_name(kv_cache_config)) == set(names)
+
+
+@pytest.mark.skipif(vllm_version_is("0.28.0"), reason="DSV4 shared backing needs the main KVCacheTensor API")
+def test_dsv4_incomplete_base_layer_layout_is_not_compacted(monkeypatch):
+    kv_cache_config = _make_dsv4_packed_config(monkeypatch)
+    original_tensors = kv_cache_config.kv_cache_tensors
+
+    apply_layerwise_kv_cache_plan(kv_cache_config, _make_vllm_config(5, 1))
+
+    assert kv_cache_config.kv_cache_tensors is original_tensors

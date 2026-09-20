@@ -73,6 +73,14 @@ class LayerwiseReuseLayout:
     has_layer_reuse: bool
 
 
+@dataclass
+class _PackedCacheLane:
+    slot_id: int
+    role: str
+    spec: KVCacheSpec
+    layer_names: list[str]
+
+
 def get_layerwise_reuse_config(kv_transfer_config: Any) -> dict[str, Any] | None:
     """Return the extra config of the layerwise-reuse connector, if any.
 
@@ -294,6 +302,176 @@ def build_layerwise_reuse_layout(
     )
 
 
+def _dsv4_cache_role(layer_name: str) -> str:
+    match = re.search(r"(?:^|\.)layers\.\d+\.(.+)$", layer_name)
+    if match is None:
+        raise ValueError(f"DeepSeek-V4 cache layer has no model-layer role: {layer_name}.")
+    return match.group(1)
+
+
+def _apply_dsv4_layerwise_kv_cache_plan(
+    kv_cache_config: KVCacheConfig,
+    layer_specs: dict[str, KVCacheSpec],
+    reuse_layout: LayerwiseReuseLayout,
+    base_layers: int,
+) -> None:
+    """Compact DSV4 tuple slots while preserving cross-group block-ID reuse.
+
+    Each scheduler group needs separate tuple slots for its live components in
+    a page-size bucket. Different groups may use the same tuple slots because
+    their block IDs are disjoint, as in the existing DSV4 packed planner.
+    """
+    if kv_cache_config.num_blocks <= 0:
+        return
+
+    groups = kv_cache_config.kv_cache_groups
+    if not groups or not isinstance(groups[0].kv_cache_spec, UniformTypeKVCacheSpecs):
+        raise ValueError("DeepSeek-V4 layerwise reuse requires packed uniform KV cache groups.")
+    page_sizes = sorted({spec.page_size_bytes for spec in groups[0].kv_cache_spec.kv_cache_specs.values()})
+    if not page_sizes:
+        raise ValueError("DeepSeek-V4 layerwise reuse has no page-size buckets.")
+
+    page_offsets: dict[int, int] = {}
+    page_prefix = 0
+    for page_size in page_sizes:
+        page_offsets[page_size] = page_prefix * kv_cache_config.num_blocks
+        page_prefix += page_size
+    tuple_stride = page_prefix * kv_cache_config.num_blocks
+
+    group_buckets: list[dict[int, list[str]]] = []
+    mtp_names: list[str] = []
+    seen_names: set[str] = set()
+    for group in groups:
+        if not isinstance(group.kv_cache_spec, UniformTypeKVCacheSpecs):
+            raise ValueError("DeepSeek-V4 layerwise reuse requires uniform specs in every group.")
+        buckets: dict[int, list[str]] = {}
+        for name in group.layer_names:
+            if name in seen_names or name not in group.kv_cache_spec.kv_cache_specs:
+                raise ValueError(f"Invalid or duplicate DeepSeek-V4 cache layer: {name}.")
+            seen_names.add(name)
+            page_size = layer_specs[name].page_size_bytes
+            if page_size not in page_offsets:
+                raise ValueError(f"DeepSeek-V4 cache layer {name} has no packed page-size bucket.")
+            if "mtp" in name:
+                mtp_names.append(name)
+            else:
+                buckets.setdefault(page_size, []).append(name)
+        group_buckets.append(buckets)
+    if seen_names != set(layer_specs):
+        raise ValueError("DeepSeek-V4 cache groups do not cover every named cache spec.")
+
+    normal_slot_count = max((len(names) for buckets in group_buckets for names in buckets.values()), default=0)
+    old_slot_count = normal_slot_count + len(mtp_names)
+    old_backing_size = tuple_stride * old_slot_count
+    expected_positions: dict[str, int] = {}
+    for buckets in group_buckets:
+        for page_size, names in buckets.items():
+            for index, name in enumerate(names):
+                expected_positions[name] = index * tuple_stride + page_offsets[page_size]
+    for index, name in enumerate(mtp_names):
+        expected_positions[name] = (normal_slot_count + index) * tuple_stride + page_offsets[
+            layer_specs[name].page_size_bytes
+        ]
+
+    old_names: set[str] = set()
+    for tensor in kv_cache_config.kv_cache_tensors:
+        if tensor.size != old_backing_size:
+            raise ValueError("DeepSeek-V4 packed descriptors must share the planned backing size.")
+        for index, name in enumerate(get_kv_cache_tensor_layers(tensor)):
+            if name in old_names or name not in expected_positions:
+                raise ValueError(f"Invalid or duplicate DeepSeek-V4 packed view: {name}.")
+            old_names.add(name)
+            if (
+                tensor.block_stride != layer_specs[name].page_size_bytes
+                or tensor.offset + index * tensor.layer_stride != expected_positions[name]
+            ):
+                raise ValueError(f"Unexpected DeepSeek-V4 packed view geometry for {name}.")
+    if old_names != seen_names:
+        raise ValueError("DeepSeek-V4 packed descriptors do not cover every cache layer.")
+
+    physical_to_slot: dict[int, int] = {}
+    for slot_id, physical_layers in enumerate(reuse_layout.buffer_slots):
+        for physical_layer in physical_layers:
+            if physical_layer in physical_to_slot:
+                raise ValueError(f"DeepSeek-V4 physical layer {physical_layer} has multiple reuse slots.")
+            physical_to_slot[physical_layer] = slot_id
+
+    # Keep the planner's MTP tail slots independent. Reusing them with target
+    # layers requires a separate lifetime guarantee from the MTP execution path.
+    group_lanes: list[dict[int, list[_PackedCacheLane]]] = []
+    for buckets in group_buckets:
+        lanes_by_page: dict[int, list[_PackedCacheLane]] = {}
+        for page_size, names in buckets.items():
+            lanes = lanes_by_page.setdefault(page_size, [])
+            for name in names:
+                physical_layer = get_layerwise_physical_layer_index(name, base_layers)
+                slot_id = physical_to_slot[physical_layer]
+                role = _dsv4_cache_role(name)
+                spec = layer_specs[name]
+                lane = next(
+                    (
+                        lane
+                        for lane in lanes
+                        if lane.slot_id == slot_id and lane.role == role and lane.spec == spec
+                    ),
+                    None,
+                )
+                if lane is None:
+                    lanes.append(_PackedCacheLane(slot_id, role, spec, [name]))
+                else:
+                    lane.layer_names.append(name)
+        group_lanes.append(lanes_by_page)
+
+    reused_normal_slots = max((len(lanes) for pages in group_lanes for lanes in pages.values()), default=0)
+    reused_slot_count = reused_normal_slots + len(mtp_names)
+    if reused_slot_count >= old_slot_count:
+        return
+
+    backing_size = tuple_stride * reused_slot_count
+    new_tensors: list[KVCacheTensor] = []
+    for lanes_by_page in group_lanes:
+        for page_size in page_sizes:
+            for slot_index, lane in enumerate(lanes_by_page.get(page_size, [])):
+                new_tensors.append(
+                    KVCacheTensor(
+                        size=backing_size,
+                        layers=lane.layer_names,
+                        offset=slot_index * tuple_stride + page_offsets[page_size],
+                        layer_stride=0,
+                        block_stride=page_size,
+                    )
+                )
+    for index, name in enumerate(mtp_names):
+        page_size = layer_specs[name].page_size_bytes
+        new_tensors.append(
+            KVCacheTensor(
+                size=backing_size,
+                layers=[name],
+                offset=(reused_normal_slots + index) * tuple_stride + page_offsets[page_size],
+                layer_stride=0,
+                block_stride=page_size,
+            )
+        )
+
+    new_names: set[str] = set()
+    for tensor in new_tensors:
+        for name in tensor.layers:
+            layer_end = tensor.offset + kv_cache_config.num_blocks * layer_specs[name].page_size_bytes
+            if name in new_names or layer_end > backing_size:
+                raise ValueError(f"Invalid DeepSeek-V4 layerwise packed view for {name}.")
+            new_names.add(name)
+    if new_names != seen_names:
+        raise ValueError("DeepSeek-V4 layerwise plan does not cover every cache layer.")
+
+    kv_cache_config.kv_cache_tensors = new_tensors
+    logger.info(
+        "DeepSeek-V4 layerwise KV reuse compacted %d packed tuple slots into %d at fixed num_blocks=%d.",
+        old_slot_count,
+        reused_slot_count,
+        kv_cache_config.num_blocks,
+    )
+
+
 def apply_layerwise_kv_cache_plan(
     kv_cache_config: KVCacheConfig,
     vllm_config: VllmConfig,
@@ -304,11 +482,16 @@ def apply_layerwise_kv_cache_plan(
         return
 
     old_tensors = kv_cache_config.kv_cache_tensors
-    if len(old_tensors) <= 1:
+    if not old_tensors:
         return
 
-    base_layers = vllm_config.model_config.get_num_layers(vllm_config.parallel_config)
     layer_specs = get_layerwise_kv_cache_specs(kv_cache_config)
+    is_dsv4_main = not vllm_version_is("0.28.0") and any(
+        getattr(spec, "model_version", None) == "deepseek_v4" for spec in layer_specs.values()
+    )
+    if len(old_tensors) == 1 and not is_dsv4_main:
+        return
+    base_layers = vllm_config.model_config.get_num_layers(vllm_config.parallel_config)
     reuse_layout = build_layerwise_reuse_layout(
         layer_specs,
         base_layers,
@@ -316,6 +499,17 @@ def apply_layerwise_kv_cache_plan(
     )
     actual_layers = len(reuse_layout.layer_cache_specs)
     if not reuse_layout.has_layer_reuse:
+        return
+    if is_dsv4_main:
+        base_physical_layers = {
+            get_layerwise_physical_layer_index(name, base_layers)
+            for name in layer_specs
+            if "mtp" not in name
+        }
+        if len(base_physical_layers) < base_layers:
+            logger.warning("DeepSeek-V4 layerwise reuse has an incomplete base-layer cache layout; skip compaction.")
+            return
+        _apply_dsv4_layerwise_kv_cache_plan(kv_cache_config, layer_specs, reuse_layout, base_layers)
         return
     if any(
         len(get_kv_cache_tensor_layers(tensor)) != 1 or tensor.offset != 0 or tensor.block_stride != 0

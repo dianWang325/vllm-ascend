@@ -206,6 +206,67 @@ class TestNPUWorker(TestBase):
 
         self.assertEqual(memory_info, (3, 3, 1.0))
 
+    def test_deepseek_v4_layerwise_reuse_keeps_fixed_block_budget(self):
+        from vllm_ascend.core.kv_cache_interface import AscendMLAAttentionSpec
+        from vllm_ascend.worker.worker import NPUWorker
+
+        worker = NPUWorker.__new__(NPUWorker)
+        worker.model_config = MagicMock()
+        worker.parallel_config = MagicMock()
+        worker.model_config.get_num_layers.return_value = 4
+        spec = AscendMLAAttentionSpec(
+            block_size=2,
+            num_kv_heads=1,
+            head_size=8,
+            dtype=torch.int8,
+            model_version="deepseek_v4",
+        )
+        specs = {f"model.layers.{layer}.self_attn.attn": spec for layer in range(4)}
+
+        self.assertEqual(
+            worker._get_layerwise_kv_cache_memory_info(specs, {"layerwise_num_shared_buffers": 1}),
+            (4, 4, 1.0),
+        )
+
+    def test_deepseek_v4_layerwise_budget_fallback_does_not_scale(self):
+        from vllm_ascend.worker.worker import NPUWorker
+
+        worker = NPUWorker.__new__(NPUWorker)
+        worker.cache_config = SimpleNamespace(kv_cache_memory_bytes=None)
+        worker.model_runner = SimpleNamespace(model_memory_usage=0, profile_run=MagicMock())
+        worker.init_snapshot = SimpleNamespace(free_memory=1000)
+        worker.requested_memory = 800
+        worker.device = "npu:0"
+        worker.model_config = SimpleNamespace(
+            hf_text_config=SimpleNamespace(model_type="deepseek_v4"),
+            get_num_layers=lambda _parallel_config: 4,
+        )
+        worker.parallel_config = SimpleNamespace()
+        worker.vllm_config = SimpleNamespace(kv_transfer_config=SimpleNamespace())
+        worker._scale_kv_cache_memory_for_multi_group = lambda memory: memory
+        worker._apply_kv_offload_decode_memory_constraints = lambda memory: memory
+        worker._apply_kvpp_memory_budget = lambda memory: memory
+        profile = SimpleNamespace(
+            before_profile=SimpleNamespace(torch_peak=0),
+            after_profile=SimpleNamespace(free_memory=900),
+            non_torch_increase=0,
+            weights_memory=0,
+        )
+        profile_context = MagicMock()
+        profile_context.__enter__.return_value = profile
+
+        with (
+            patch("vllm_ascend.worker.worker.maybe_apply_startup_plan"),
+            patch("vllm_ascend.worker.worker.memory_profiling", return_value=profile_context),
+            patch("vllm_ascend.worker.worker.torch.npu.memory_stats", return_value={"allocated_bytes.all.peak": 0}),
+            patch(
+                "vllm_ascend.worker.worker.get_layerwise_reuse_config",
+                return_value={"layerwise_num_shared_buffers": 1},
+            ),
+            patch("vllm_ascend.worker.worker.build_layerwise_cache_layout", side_effect=AssertionError),
+        ):
+            self.assertEqual(worker.determine_available_memory(), 800)
+
     @unittest.skipIf(vllm_version_is("0.28.0"), "vLLM #51718 only changed the main planner")
     def test_deepseek_v4_shared_tuple_layout_does_not_scale_budget(self):
         from vllm_ascend.worker.worker import NPUWorker
