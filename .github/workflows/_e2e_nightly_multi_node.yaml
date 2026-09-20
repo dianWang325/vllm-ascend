@@ -40,6 +40,11 @@ on:
         default: "2"
         type: string
         description: how many pods will be pulled up via lws.yaml, indicates number of nodes we need
+      npu_per_node:
+        required: false
+        default: ''
+        type: string
+        description: optional NPU count per node; defaults to the SoC-specific allocation
       vllm_ascend_remote_url:
         required: false
         default: https://github.com/vllm-project/vllm-ascend.git
@@ -280,6 +285,9 @@ jobs:
             npu_per_node=8
             pvc_name=vllm-project-hk001
           fi
+          if [[ -n "${{ inputs.npu_per_node }}" ]]; then
+            npu_per_node="${{ inputs.npu_per_node }}"
+          fi
 
           benchmark_job_name="${{ steps.vars.outputs.benchmark_job_name }}"
 
@@ -410,6 +418,10 @@ jobs:
           ' "$LEADER_TMP")"
           echo "vllm_hash=${HASH_vllm:-N/A}" >> "$GITHUB_OUTPUT"
           echo "vllm_ascend_hash=${HASH_vllm_ascend:-N/A}" >> "$GITHUB_OUTPUT"
+          if [[ "${{ inputs.config_file_path }}" == DeepSeek-V4-Flash-Memcache-PD-cache-reuse*.yaml ]]; then
+            python3 tests/e2e/weekly/multi_node/external_dp/scripts/check_dsv4_cache_reuse_log.py \
+              "${LOG_PREFIX}/node_0_external_dp_logs.tar.gz"
+          fi
           rm -f "$LEADER_TMP"
 
       - name: Update good_table.csv on success

@@ -239,6 +239,15 @@ a3:
         config_file_path: DeepSeek-V4-Flash-Memcache-PD-acc.yaml
         config_base_path: tests/e2e/weekly/multi_node/external_dp/config
         size: 2
+      - name: DeepSeek-V4-Flash-Memcache-PD-cache-reuse
+        config_file_path: DeepSeek-V4-Flash-Memcache-PD-cache-reuse.yaml
+        config_base_path: tests/e2e/weekly/multi_node/external_dp/config
+        size: 2
+      - name: DeepSeek-V4-Flash-W4A8-Memcache-PD-cache-reuse-16NPU
+        config_file_path: DeepSeek-V4-Flash-Memcache-PD-cache-reuse-w4a8-16npu.yaml
+        config_base_path: tests/e2e/weekly/multi_node/external_dp/config
+        size: 2
+        npu_per_node: 8
       - name: DSv4-Flash-Memcache-PD-layerwise
         config_file_path: DSv4-Flash-Memcache-PD-layerwise.yaml
         config_base_path: tests/e2e/weekly/multi_node/external_dp/config
