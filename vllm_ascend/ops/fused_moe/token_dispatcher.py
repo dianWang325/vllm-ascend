@@ -493,6 +493,8 @@ class TokenDispatcherWithAll2AllV(MoETokenDispatcher[MoEAllToAllCombineMetadata]
         topk_weights = token_dispatch_input.topk_weights
         topk_ids = token_dispatch_input.topk_ids
 
+        topk_weights, topk_ids = self._normalize_padding_routes(topk_weights, topk_ids)
+
         (
             permutated_local_input_tokens,
             reversed_local_input_permutation_mapping,
@@ -576,6 +578,29 @@ class TokenDispatcherWithAll2AllV(MoETokenDispatcher[MoEAllToAllCombineMetadata]
         output = self._combine_postprocess(permutated_local_input_tokens, combine_metadata)
 
         return output
+
+    @staticmethod
+    def _normalize_padding_routes(
+        topk_weights: torch.Tensor,
+        topk_ids: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Keep PCP padding rows shape-compatible with AlltoAllV.
+
+        With ``VLLM_MOE_SKIP_PADDING=1``, the router marks every route of a
+        padding token with expert id ``-1``.  The AlltoAllV histogram excludes
+        those ids, while ``npu_moe_token_permute`` still emits
+        ``topk_ids.numel()`` rows.  The resulting split sizes therefore no
+        longer cover the permuted activation (or its dynamic-quant scale).
+
+        Route padding slots to a real expert with zero combine weight.  This
+        preserves the fixed PCP tensor shape required by PP communication,
+        accounts for every row in the AlltoAllV splits, and keeps padding from
+        contributing to the combined output.
+        """
+        valid_routes = topk_ids >= 0
+        normalized_topk_ids = topk_ids.masked_fill(~valid_routes, 0)
+        normalized_topk_weights = topk_weights.masked_fill(~valid_routes, 0)
+        return normalized_topk_weights, normalized_topk_ids
 
     def _dispatch_preprocess(self, hidden_states, topk_ids):
         hidden_shape = hidden_states.shape

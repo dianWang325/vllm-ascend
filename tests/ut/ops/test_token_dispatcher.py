@@ -928,6 +928,19 @@ class TestTokenDispatcherWithAll2AllV(TestBase):
 
         self.dispatcher = TokenDispatcherWithAll2AllV(top_k=2, num_experts=4, num_local_experts=2, with_quant=False)
 
+    def test_normalize_padding_routes_keeps_alltoall_splits_aligned(self):
+        topk_weights = torch.tensor([[0.4, 0.6], [0.7, 0.3]])
+        topk_ids = torch.tensor([[2, 3], [-1, -1]], dtype=torch.int64)
+
+        normalized_weights, normalized_ids = self.dispatcher._normalize_padding_routes(topk_weights, topk_ids)
+        _, input_splits, _, _, num_out_tokens = self.dispatcher._preprocess(normalized_ids)
+
+        self.assertTrue(torch.equal(normalized_ids, torch.tensor([[2, 3], [0, 0]], dtype=torch.int64)))
+        self.assertTrue(torch.equal(normalized_weights, torch.tensor([[0.4, 0.6], [0.0, 0.0]])))
+        self.assertEqual(int(input_splits.sum()), normalized_ids.numel())
+        self.assertEqual(num_out_tokens, normalized_ids.numel())
+        self.assertTrue(torch.equal(topk_ids, torch.tensor([[2, 3], [-1, -1]], dtype=torch.int64)))
+
     @pytest.mark.skip("Skip as register_kernels has NPU SocName checking in CANN 8.5.0.")
     def test_token_dispatch(self):
         hidden_states = torch.randn(8, 16)
