@@ -196,7 +196,7 @@ def test_eagle_draft_config_preserves_profiling_chunk() -> None:
     )
     speculator = object.__new__(AscendEagleSpeculator)
     speculator.vllm_config = target_config
-    speculator.draft_model_config = object()
+    speculator.draft_model_config = SimpleNamespace(hf_overrides=None)
 
     with (
         patch.object(speculator_module, "replace", side_effect=_fake_config_replace),
@@ -701,6 +701,7 @@ def test_eagle_create_draft_vllm_config_fills_hf_overrides() -> None:
     speculator = object.__new__(AscendEagleSpeculator)
     speculator.draft_model_config = SimpleNamespace(hf_overrides=None)
     speculator.vllm_config = SimpleNamespace(
+        model_config=object(),
         parallel_config=SimpleNamespace(
             pipeline_parallel_size=8,
             enable_expert_parallel=True,
