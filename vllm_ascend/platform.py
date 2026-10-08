@@ -498,8 +498,9 @@ class NPUPlatform(Platform):
         _fix_incompatible_config(vllm_config)
 
         # 5.Initialize Ascend config and validate Ascend-specific options
-        # (fused MC2 exclusivity + scheduler extension policies)
-        # ascend_config is only used for verification, this object must NOT be modified here
+        # (fused MC2 exclusivity + scheduler extension policies). Compatibility
+        # checks may normalize both this effective config and additional_config
+        # so worker processes observe the same values.
         ascend_config = init_ascend_config(vllm_config)
         _check_ascend_config(vllm_config, ascend_config)
 
@@ -1041,14 +1042,37 @@ def _check_ascend_config(vllm_config: VllmConfig, ascend_config) -> None:
 
     # profiling_chunk (CPP) works with async scheduling only on the v2 model
     # runner; the v1 PP execution path does not provide the same asynchronous
-    # sampled-token cadence and broadcast guarantees.
+    # sampled-token cadence and broadcast guarantees. Disable CPP instead of
+    # failing startup, and persist the effective value for worker processes
+    # that reconstruct AscendConfig from vllm_config.additional_config.
     profiling_chunk_config = scheduler_extension_config.profiling_chunk_config
     if profiling_chunk_config.enabled and vllm_config.scheduler_config.async_scheduling:
         if not vllm_config.use_v2_model_runner:
-            raise ValueError(
-                "profiling_chunk_config with async scheduling requires the v2 model runner "
-                "(VLLM_USE_V2_MODEL_RUNNER=1). Please enable it or disable async scheduling."
+            logger.warning(
+                "profiling_chunk_config is disabled because async scheduling is not "
+                "supported with CPP on Model Runner V1. Set "
+                "VLLM_USE_V2_MODEL_RUNNER=1 to use CPP with async scheduling."
             )
+            profiling_chunk_config.enabled = False
+            profiling_chunk_config.need_timing = False
+
+            additional_scheduler_config = additional_config.get("scheduler_config")
+            if isinstance(additional_scheduler_config, dict) and "profiling_chunk_config" in (
+                additional_scheduler_config
+            ):
+                raw_profiling_chunk_config = additional_scheduler_config["profiling_chunk_config"]
+            elif "profiling_chunk_config" in additional_config:
+                # Preserve compatibility with the deprecated top-level form.
+                raw_profiling_chunk_config = additional_config["profiling_chunk_config"]
+            else:
+                if additional_scheduler_config is None:
+                    additional_scheduler_config = {}
+                    additional_config["scheduler_config"] = additional_scheduler_config
+                raw_profiling_chunk_config = {}
+                additional_scheduler_config["profiling_chunk_config"] = raw_profiling_chunk_config
+
+            raw_profiling_chunk_config["enabled"] = False
+            raw_profiling_chunk_config["need_timing"] = False
 
     dyntra_lb_config = scheduler_extension_config.dyntra_lb_config
     if dyntra_lb_config.enabled:

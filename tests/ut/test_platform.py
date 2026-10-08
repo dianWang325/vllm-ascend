@@ -1516,6 +1516,11 @@ class TestNPUPlatform(TestBase):
                 "vllm_ascend.core.scheduler_profiling_chunk.ProfilingChunkAsyncScheduler",
             ),
             (
+                True,
+                False,
+                None,
+            ),
+            (
                 False,
                 True,
                 "vllm_ascend.core.scheduler_profiling_chunk.ProfilingChunkScheduler",
@@ -1561,7 +1566,7 @@ class TestNPUPlatform(TestBase):
         return_value=get_hardware_profile(AscendDeviceType.A3),
     )
     @patch("vllm_ascend.ascend_config.init_ascend_config")
-    def test_check_and_update_config_profiling_chunk_async_requires_v2_runner(
+    def test_check_and_update_config_profiling_chunk_async_disables_cpp_on_v1_runner(
         self,
         mock_init_ascend,
         mock_soc_version,
@@ -1574,19 +1579,40 @@ class TestNPUPlatform(TestBase):
 
         ascend_config = TestNPUPlatform.mock_vllm_ascend_config()
         ascend_config.scheduler_config.profiling_chunk_config.enabled = True
+        ascend_config.scheduler_config.profiling_chunk_config.need_timing = True
         mock_init_ascend.return_value = ascend_config
 
         vllm_config = TestNPUPlatform.mock_vllm_config()
+        vllm_config.additional_config = {
+            "scheduler_config": {
+                "profiling_chunk_config": {
+                    "enabled": True,
+                    "need_timing": True,
+                }
+            }
+        }
         vllm_config.kv_transfer_config = None
         vllm_config.scheduler_config.async_scheduling = True
         vllm_config.use_v2_model_runner = False
 
         with (
-            pytest.raises(ValueError, match="v2 model runner"),
             patch.object(platform, "_fix_incompatible_config"),
             patch.object(platform, "check_kv_extra_config"),
+            patch.object(platform.logger, "warning") as mock_warning,
         ):
             self.platform.check_and_update_config(vllm_config)
+
+        mock_warning.assert_called_once()
+        self.assertIn("Model Runner V1", mock_warning.call_args.args[0])
+        self.assertFalse(ascend_config.scheduler_config.profiling_chunk_config.enabled)
+        self.assertFalse(ascend_config.scheduler_config.profiling_chunk_config.need_timing)
+        self.assertFalse(
+            vllm_config.additional_config["scheduler_config"]["profiling_chunk_config"]["enabled"]
+        )
+        self.assertFalse(
+            vllm_config.additional_config["scheduler_config"]["profiling_chunk_config"]["need_timing"]
+        )
+        self.assertIsNone(vllm_config.scheduler_config.scheduler_cls)
 
     @patch("vllm_ascend.quantization.utils.maybe_auto_detect_quantization")
     @patch(
