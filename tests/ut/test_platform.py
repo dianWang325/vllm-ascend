@@ -1606,12 +1606,8 @@ class TestNPUPlatform(TestBase):
         self.assertIn("Model Runner V1", mock_warning.call_args.args[0])
         self.assertFalse(ascend_config.scheduler_config.profiling_chunk_config.enabled)
         self.assertFalse(ascend_config.scheduler_config.profiling_chunk_config.need_timing)
-        self.assertFalse(
-            vllm_config.additional_config["scheduler_config"]["profiling_chunk_config"]["enabled"]
-        )
-        self.assertFalse(
-            vllm_config.additional_config["scheduler_config"]["profiling_chunk_config"]["need_timing"]
-        )
+        self.assertFalse(vllm_config.additional_config["scheduler_config"]["profiling_chunk_config"]["enabled"])
+        self.assertFalse(vllm_config.additional_config["scheduler_config"]["profiling_chunk_config"]["need_timing"])
         self.assertIsNone(vllm_config.scheduler_config.scheduler_cls)
 
     @patch("vllm_ascend.quantization.utils.maybe_auto_detect_quantization")
