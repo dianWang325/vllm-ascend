@@ -29,12 +29,107 @@ an import of this module, which re-applies the ``EngineCore.__init__``
 patches inside the child process before any ``EngineCore`` is instantiated.
 """
 
+import time
+from functools import wraps
+
 from vllm.logger import logger
 from vllm.v1.engine.core import EngineCore
 
 _profiling_patches_applied = False
 _original_update_from_output = None
 _original_schedule = None
+
+
+def _collect_step_chunks(scheduler, scheduler_output):
+    """Collect ``(request_id, scheduled, history)`` for one scheduler step."""
+    scheduled_tokens = getattr(scheduler_output, "num_scheduled_tokens", {})
+    histories = {}
+
+    for request in getattr(scheduler_output, "scheduled_new_reqs", []):
+        request_id = getattr(request, "request_id", None) or getattr(request, "req_id", None)
+        if request_id is not None:
+            histories[request_id] = getattr(request, "num_computed_tokens", None)
+
+    cached_reqs = getattr(scheduler_output, "scheduled_cached_reqs", None)
+    if cached_reqs is not None:
+        request_ids = getattr(cached_reqs, "req_ids", [])
+        computed_tokens = getattr(cached_reqs, "num_computed_tokens", [])
+        for index, request_id in enumerate(request_ids):
+            if index < len(computed_tokens):
+                histories[request_id] = computed_tokens[index]
+
+    # Keep the diagnostic useful across upstream SchedulerOutput changes. The
+    # live request is only a fallback; SchedulerOutput remains authoritative.
+    requests = getattr(scheduler, "requests", {})
+    chunks = []
+    for request_id, num_tokens in scheduled_tokens.items():
+        if num_tokens <= 0:
+            continue
+        history = histories.get(request_id)
+        if history is None:
+            request = requests.get(request_id) if hasattr(requests, "get") else None
+            history = getattr(request, "num_computed_tokens", None)
+        chunks.append((request_id, int(num_tokens), None if history is None else int(history)))
+    return chunks
+
+
+def _ensure_pp_step_timing_wrapped(scheduler):
+    """Log real PP scheduler-step composition and host completion latency.
+
+    This is intentionally observation-only: it neither synchronizes the NPU
+    nor changes the scheduler output. The marker is attached to each output so
+    async scheduling can have multiple in-flight steps without mixing records.
+    """
+    cls = type(scheduler)
+    if getattr(cls.schedule, "_vllm_ascend_pp_step_timing_patched", False):
+        return
+
+    original_schedule = cls.schedule
+    original_update_from_output = cls.update_from_output
+
+    @wraps(original_schedule)
+    def _timed_schedule(self, *args, **kwargs):
+        output = original_schedule(self, *args, **kwargs)
+        if output is None or getattr(output, "total_num_scheduled_tokens", 0) <= 0:
+            return output
+
+        step_id = getattr(self, "_vllm_ascend_pp_step_id", 0) + 1
+        self._vllm_ascend_pp_step_id = step_id
+        chunks = _collect_step_chunks(self, output)
+        output._vllm_ascend_pp_step_timing = (step_id, time.perf_counter_ns(), chunks)
+        return output
+
+    @wraps(original_update_from_output)
+    def _timed_update_from_output(self, scheduler_output, model_output):
+        timing = getattr(scheduler_output, "_vllm_ascend_pp_step_timing", None)
+        if timing is not None:
+            step_id, start_ns, chunks = timing
+            latency_ms = (time.perf_counter_ns() - start_ns) / 1_000_000
+            known_histories = all(history is not None for _, _, history in chunks)
+            x1 = (
+                sum(num_tokens * (num_tokens + history) for _, num_tokens, history in chunks)
+                if known_histories
+                else None
+            )
+            x2 = (
+                sum(num_tokens + history for _, num_tokens, history in chunks) if known_histories else None
+            )
+            logger.info(
+                "[PPStepTiming] step=%d latency_ms=%.3f num_requests=%d total_tokens=%d x1=%s x2=%s chunks=%s",
+                step_id,
+                latency_ms,
+                len(chunks),
+                sum(num_tokens for _, num_tokens, _ in chunks),
+                x1,
+                x2,
+                chunks,
+            )
+        return original_update_from_output(self, scheduler_output, model_output)
+
+    _timed_schedule._vllm_ascend_pp_step_timing_patched = True
+    _timed_update_from_output._vllm_ascend_pp_step_timing_patched = True
+    cls.schedule = _timed_schedule
+    cls.update_from_output = _timed_update_from_output
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +291,8 @@ def _apply_profiling_patches():
 
     def _patched_engine_core_init(self, *args, **kwargs):
         original_init(self, *args, **kwargs)
+
+        _ensure_pp_step_timing_wrapped(self.scheduler)
 
         if hasattr(self.scheduler, "run_profiling_chunk_init"):
             logger.info("[ProfilingChunk] Running profiling initialization...")
