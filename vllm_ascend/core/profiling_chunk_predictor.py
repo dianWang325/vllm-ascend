@@ -246,12 +246,13 @@ class ChunkSizePredictor:
         self,
         query_len: int,
         num_computed_tokens: int,
+        include_constant: bool = True,
     ) -> float:
         """Get time T based on current seq_lens, f(C,H) = a*C(C+H) + b*C + c = T"""
         return (
             self.quadratic_chunk_a * query_len * (query_len + num_computed_tokens)
             + self.linear_chunk_b * query_len
-            + self.constant_chunk_c
+            + (self.constant_chunk_c if include_constant else 0.0)
         )
 
     def predict(
@@ -321,6 +322,7 @@ class ChunkSizePredictor:
         base_chunk_size: int,
         page_size: int,
         target_time: float = 0,
+        include_constant: bool = True,
     ) -> int | None:
         """Predict next chunk size x using the history-aware model
         f(C,H) = a*C(C+H) + b*C + c.
@@ -349,15 +351,17 @@ class ChunkSizePredictor:
 
         # f(x,H) = a*x*(x+H) + b*x + c, solving f(x,H)=T gives:
         # a*x^2 + (a*H + b)*x + (c - T) = 0.
+        # The constant is included only for the first prefill in a batch.
         # Standard form: A*x^2 + B*x + C = 0, where H=num_computed_tokens, T=target_latency
         A = self.quadratic_chunk_a
         if A == 0:
             return None
         B = self.quadratic_chunk_a * num_computed_tokens + self.linear_chunk_b
+        constant = self.constant_chunk_c if include_constant else 0.0
         if target_time > 0:
-            C = self.constant_chunk_c - target_time
+            C = constant - target_time
         else:
-            C = self.constant_chunk_c - self.target_latency
+            C = constant - self.target_latency
 
         discriminant = B * B - 4 * A * C
         if discriminant < 0:
@@ -416,32 +420,53 @@ class ProfilingChunkManager:
     def history_ready(self) -> bool:
         return self.is_ready and self.predictor.with_history_ready
 
-    def predict_chunk_size(self, num_computed_tokens: int, target_time: float) -> int | None:
+    def predict_chunk_size(
+        self,
+        num_computed_tokens: int,
+        target_time: float,
+        include_constant: bool = True,
+    ) -> int | None:
         """Predict optimal chunk size for given history length."""
         if not self.is_ready:
             return None
 
         if not self.history_ready:
-            predict_func = self.predictor.predict
-        else:
-            predict_func = self.predictor.predict_with_history
-        return predict_func(
+            return self.predictor.predict(
+                num_computed_tokens=num_computed_tokens,
+                base_chunk_size=self.base_chunk_size,
+                page_size=self.page_size,
+                target_time=target_time,
+            )
+        return self.predictor.predict_with_history(
             num_computed_tokens=num_computed_tokens,
             base_chunk_size=self.base_chunk_size,
             page_size=self.page_size,
             target_time=target_time,
+            include_constant=include_constant,
         )
 
-    def predict_time(self, num_new_tokens: int, num_computed_tokens: int) -> float:
+    def predict_time(
+        self,
+        num_new_tokens: int,
+        num_computed_tokens: int,
+        include_constant: bool = True,
+    ) -> float:
         """Get the consumed time of scheduled reqs for time_budget."""
         if not self.is_ready:
             return 0.0
 
         if not self.history_ready:
-            predict_func = self.predictor.get_time
+            predicted_time = self.predictor.get_time(
+                query_len=num_new_tokens,
+                num_computed_tokens=num_computed_tokens,
+            )
         else:
-            predict_func = self.predictor.get_time_with_history
-        return predict_func(query_len=num_new_tokens, num_computed_tokens=num_computed_tokens)
+            predicted_time = self.predictor.get_time_with_history(
+                query_len=num_new_tokens,
+                num_computed_tokens=num_computed_tokens,
+                include_constant=include_constant,
+            )
+        return max(predicted_time, 0.0)
 
     def record_batch_execution_time(self, request_chunks: list, elapsed_time: float) -> bool:
         """Record batch execution time for online model refinement.
@@ -453,12 +478,12 @@ class ProfilingChunkManager:
             request_chunks: List of (chunk_size, num_computed_tokens) per request
             elapsed_time: Total elapsed time in seconds
         """
-        x1 = x2 = x3 = 0
+        x1 = x2 = 0
         for chunk, hist in request_chunks:
             x1 += (chunk + hist) * chunk
             x2 += chunk
-            x3 += 1
-        self.chunked_fit_data.append([x1, x2, x3, elapsed_time * 1000])
+        # The constant term applies once per batch, not once per request.
+        self.chunked_fit_data.append([x1, x2, 1, elapsed_time * 1000])
         if not self.predictor.fit_chunk(self.chunked_fit_data):
             return False
 
