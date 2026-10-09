@@ -285,7 +285,6 @@ class ProfilingChunkScheduler(Scheduler):
         # >>> PROFILING CHUNK >>>
         target_latency = self.profiling_chunk_manager.predictor.target_latency
         time_budget = target_latency if target_latency is not None else float("inf")
-        profiling_constant_charged = False
         # <<< PROFILING CHUNK <<<
         token_budget = self.max_num_scheduled_tokens
         spec = self.vllm_config.speculative_config
@@ -434,7 +433,6 @@ class ProfilingChunkScheduler(Scheduler):
                 predicted_chunk = self.profiling_chunk_manager.predict_chunk_size(
                     num_computed_tokens=request.num_computed_tokens,
                     target_time=time_budget,
-                    include_constant=not profiling_constant_charged,
                 )
                 if predicted_chunk is not None and predicted_chunk > 0:
                     logger.debug(
@@ -580,12 +578,7 @@ class ProfilingChunkScheduler(Scheduler):
             # Decode requests (num_new_tokens == 1) have negligible latency;
             # skip time_budget accounting so they don't starve other requests.
             if request.num_computed_tokens < request.num_prompt_tokens:
-                time_budget -= self.profiling_chunk_manager.predict_time(
-                    num_new_tokens,
-                    request.num_computed_tokens,
-                    include_constant=not profiling_constant_charged,
-                )
-                profiling_constant_charged = True
+                time_budget -= self.profiling_chunk_manager.predict_time(num_new_tokens, request.num_computed_tokens)
             # <<< PROFILING CHUNK <<<
             req_index += 1
 
@@ -867,7 +860,6 @@ class ProfilingChunkScheduler(Scheduler):
                         predicted_chunk = self.profiling_chunk_manager.predict_chunk_size(
                             num_computed_tokens=num_computed_tokens,
                             target_time=time_budget,
-                            include_constant=not profiling_constant_charged,
                         )
                         if predicted_chunk is not None and predicted_chunk > 0:
                             num_new_tokens = min(num_new_tokens, predicted_chunk)
@@ -1055,11 +1047,8 @@ class ProfilingChunkScheduler(Scheduler):
                 # skip time_budget accounting so they don't starve other requests.
                 if request.num_computed_tokens < request.num_prompt_tokens:
                     time_budget -= self.profiling_chunk_manager.predict_time(
-                        num_new_tokens,
-                        request.num_computed_tokens,
-                        include_constant=not profiling_constant_charged,
+                        num_new_tokens, request.num_computed_tokens
                     )
-                    profiling_constant_charged = True
                 # <<< PROFILING CHUNK <<<
                 request.status = RequestStatus.RUNNING
                 request.num_computed_tokens = num_computed_tokens
