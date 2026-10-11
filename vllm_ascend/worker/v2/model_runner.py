@@ -45,7 +45,7 @@ from vllm.v1.worker.gpu.model_runner import (
     ExecuteModelState,
     GPUModelRunner,
 )
-
+from vllm.distributed import get_pp_group, get_tp_group
 from vllm_ascend.ascend_config import get_ascend_config
 from vllm_ascend.ascend_forward_context import (
     MoECommType,
@@ -392,6 +392,15 @@ class NPUModelRunner(GPUModelRunner):
             profiling_config,
             execution_start_time,
         )
+        # if (
+        #     self._cpp_execution_time_ms is not None
+        #     and get_pp_group().rank_in_group == 1
+        #     and get_tp_group().rank_in_group == 0
+        # ):
+        #     logger.info(
+        #         "[ProfilingChunk] execution_time_ms: %.2f ms",
+        #         self._cpp_execution_time_ms,
+        #     )
         return output
 
     @torch.inference_mode()

@@ -54,7 +54,8 @@ def _finish_profiling_chunk_timing(
 ) -> float | None:
     if not profiling_config.need_timing or execution_start_time is None:
         return None
-
+    # if execution_start_time is None:
+    #     return None
     torch.npu.synchronize()
     return (time.perf_counter() - execution_start_time) * 1000.0
 
@@ -312,7 +313,7 @@ class ChunkSizePredictor:
         if chunk_size < align:
             chunk_size = align
 
-        logger.debug("[ProfilingChunk] Predicted chunk_size=%d", chunk_size)
+        logger.info("[ProfilingChunk] Predicted chunk_size=%d", chunk_size)
         return chunk_size if chunk_size >= align else None
 
     def predict_with_history(
@@ -369,7 +370,7 @@ class ChunkSizePredictor:
         if x <= 0:
             return None
 
-        logger.debug("[ProfilingChunk] History-aware raw prediction: %.1f", x)
+        logger.info("[ProfilingChunk] History-aware raw prediction: %.1f", x)
         smoothed = base_chunk_size + self.smooth_factor * (x - base_chunk_size)
         chunk_size = max(int(smoothed), self.min_chunk)
 
@@ -459,6 +460,7 @@ class ProfilingChunkManager:
             x2 += chunk
             x3 += 1
         self.chunked_fit_data.append([x1, x2, x3, elapsed_time * 1000])
+        logger.info("[ProfilingChunk] elapsed_time=%s", elapsed_time)
         if not self.predictor.fit_chunk(self.chunked_fit_data):
             return False
 
