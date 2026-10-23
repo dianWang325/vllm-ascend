@@ -17,6 +17,7 @@
 from contextlib import ExitStack
 from unittest.mock import MagicMock, PropertyMock, patch
 
+import numpy as np
 import torch
 from vllm.config import CacheConfig, ModelConfig, SchedulerConfig, VllmConfig
 from vllm.sampling_params import SamplingParams
@@ -215,7 +216,8 @@ class TestChunkSizePredictor(TestBase):
         data = []
         for i in range(10):
             c, h = 1000 + i * 100, i * 500
-            data.append([(c + h) * c, c, 1, 1e-9 * (c + h) * c + 0.001 * c + 0.5])
+            features = predictor.batch_features([(c, h)])
+            data.append([*features, 1e-9 * (c + h) * c + 0.001 * c + 0.5])
         self.assertTrue(predictor.fit_chunk(data))
         predictor.with_history_ready = True
 
@@ -226,12 +228,59 @@ class TestChunkSizePredictor(TestBase):
     def test_fit_chunk_constrains_negative_coefficients(self):
         predictor = ChunkSizePredictor()
         # The unconstrained solution is a=0, b=-1, c=11.
-        data = [[c * c, c, 1, 11 - c] for c in range(1, 6)]
+        data = [[c * c, 0, c, 1, 11 - c] for c in range(1, 6)]
 
         self.assertTrue(predictor.fit_chunk(data))
         self.assertGreaterEqual(predictor.quadratic_chunk_a, 0.0)
+        self.assertGreaterEqual(predictor.shared_max_chunk_d, 0.0)
         self.assertGreaterEqual(predictor.linear_chunk_b, 0.0)
         self.assertGreaterEqual(predictor.constant_chunk_c, 0.0)
+
+    def test_fit_chunk_recovers_shared_max_coefficient(self):
+        predictor = ChunkSizePredictor()
+        batches = [
+            [(4096, 0)],
+            [(4096, 32768)],
+            [(2048, 65536), (2048, 0)],
+            [(1024, 98304), (3072, 0)],
+            [(3072, 32768), (1024, 16384)],
+            [(2048, 98304), (1024, 32768), (1024, 0)],
+        ]
+        expected = (2e-8, 7e-8, 2e-3, 0.4)
+        data = []
+        for batch in batches:
+            features = predictor.batch_features(batch)
+            latency = sum(coeff * feature for coeff, feature in zip(expected, features, strict=True))
+            data.append([*features, latency])
+
+        self.assertTrue(predictor.fit_chunk(data))
+        actual = (
+            predictor.quadratic_chunk_a,
+            predictor.shared_max_chunk_d,
+            predictor.linear_chunk_b,
+            predictor.constant_chunk_c,
+        )
+        np.testing.assert_allclose(actual, expected, rtol=1e-6)
+
+    def test_batch_features_capture_shared_max_waste(self):
+        features = ChunkSizePredictor.batch_features([(28032, 91392), (4736, 0)])
+
+        self.assertEqual(features, (3370123264, 543162368, 32768, 2))
+        self.assertEqual(ChunkSizePredictor.batch_features([(32768, 91392)]), (4068474880, 0, 32768, 1))
+
+    def test_batch_prediction_accounts_for_scheduled_long_context(self):
+        predictor = ChunkSizePredictor(smooth_factor=1.0, min_chunk=64)
+        predictor.is_ready = True
+        predictor.with_history_ready = True
+        predictor.target_latency = 120.0
+        predictor.quadratic_chunk_a = 1e-8
+        predictor.shared_max_chunk_d = 1e-6
+
+        alone = predictor.predict_with_history_batch(0, 4096, [], 4096, 64)
+        mixed = predictor.predict_with_history_batch(0, 4096, [(1024, 100000)], 4096, 64)
+
+        self.assertEqual(alone, 4096)
+        self.assertLess(mixed, alone)
 
 
 # ===================================================================
@@ -278,6 +327,13 @@ class TestProfilingChunkManager(TestBase):
             mgr.record_batch_execution_time([(4096 - i * 100, i * 500)], 0.05 + i * 0.01)
         self.assertGreaterEqual(len(mgr.chunked_fit_data), 10)
         self.assertTrue(mgr.history_ready)
+
+    def test_record_batch_adds_shared_max_feature(self):
+        mgr = ProfilingChunkManager(base_chunk_size=8192, page_size=128)
+
+        mgr.record_batch_execution_time([(28032, 91392), (4736, 0)], 4.0)
+
+        self.assertEqual(mgr.chunked_fit_data[0][:-1], [3370123264, 543162368, 32768, 2])
 
 
 # ===================================================================

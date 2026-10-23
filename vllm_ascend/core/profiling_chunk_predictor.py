@@ -101,6 +101,7 @@ class ChunkSizePredictor:
         self.constant_coeff_c: float = 0.0
 
         self.quadratic_chunk_a: float = 0.0
+        self.shared_max_chunk_d: float = 0.0
         self.linear_chunk_b: float = 0.0
         self.constant_chunk_c: float = 0.0
 
@@ -164,7 +165,16 @@ class ChunkSizePredictor:
         return True
 
     def fit_chunk(self, chunked_data: list) -> bool:
-        """Fit batch time: T = a*sum(C(C+H)) + b*sum(C) + c.
+        """Fit the history-aware batch latency model.
+
+        The model keeps the per-request useful work and adds a separate
+        shared-max waste term for operators whose score width is determined
+        by the longest sequence in the batch::
+
+            T = a*x_ideal + d*x_waste + b*sum(C) + c*B
+
+        where ``x_ideal = sum(C_i * (C_i + H_i))`` and
+        ``x_waste = sum(C_i) * max(C_i + H_i) - x_ideal``.
 
         Returns:
             True if fitting succeeded, False otherwise
@@ -191,25 +201,47 @@ class ChunkSizePredictor:
         input_x = chunked_data_array[:, :-1]
 
         try:
-            params, _ = nnls(input_x, execute_time)
+            # The work features are O(tokens^2), while batch size is O(1).
+            # Normalize columns before NNLS to avoid the new waste feature
+            # worsening the already large conditioning gap.
+            feature_scales = np.max(np.abs(input_x), axis=0)
+            feature_scales[feature_scales == 0] = 1.0
+            scaled_params, _ = nnls(input_x / feature_scales, execute_time)
+            params = scaled_params / feature_scales
             fitted_a = float(params[0])
-            fitted_b = float(params[1])
-            fitted_c = float(params[2])
+            fitted_d = float(params[1])
+            fitted_b = float(params[2])
+            fitted_c = float(params[3])
         except (RuntimeError, ValueError, np.linalg.LinAlgError) as e:
             logger.warning("[ProfilingChunk] Failed to fit non-negative chunked model: %s", e)
             return False
 
         self.quadratic_chunk_a = fitted_a
+        self.shared_max_chunk_d = fitted_d
         self.linear_chunk_b = fitted_b
         self.constant_chunk_c = fitted_c
 
         logger.info(
-            "[ProfilingChunk With History] Fitted: a=%.2e, b=%.2e, c=%.2e",
+            "[ProfilingChunk With History] Fitted: a=%.2e, d=%.2e, b=%.2e, c=%.2e",
             fitted_a,
+            fitted_d,
             fitted_b,
             fitted_c,
         )
         return True
+
+    @staticmethod
+    def batch_features(request_chunks: list[tuple[int, int]]) -> tuple[int, int, int, int]:
+        """Return ``(x_ideal, x_waste, total_query_tokens, batch_size)``."""
+        if not request_chunks:
+            return 0, 0, 0, 0
+
+        total_query_tokens = sum(chunk for chunk, _ in request_chunks)
+        max_seq_len = max(chunk + hist for chunk, hist in request_chunks)
+        x_ideal = sum(chunk * (chunk + hist) for chunk, hist in request_chunks)
+        x_shared = total_query_tokens * max_seq_len
+        x_waste = max(0, x_shared - x_ideal)
+        return x_ideal, x_waste, total_query_tokens, len(request_chunks)
 
     def set_target_latency(self, base_chunk_size: int, elapsed_time: float = 0.0) -> None:
         """Set target latency based on base chunk size."""
@@ -247,12 +279,63 @@ class ChunkSizePredictor:
         query_len: int,
         num_computed_tokens: int,
     ) -> float:
-        """Get time T based on current seq_lens, f(C,H) = a*C(C+H) + b*C + c = T"""
+        """Get time for one request using the history-aware batch model."""
+        return self.get_batch_time_with_history([(query_len, num_computed_tokens)])
+
+    def get_batch_time_with_history(self, request_chunks: list[tuple[int, int]]) -> float:
+        """Predict one forward latency for all ``(chunk, history)`` pairs."""
+        x_ideal, x_waste, total_query_tokens, batch_size = self.batch_features(request_chunks)
         return (
-            self.quadratic_chunk_a * query_len * (query_len + num_computed_tokens)
-            + self.linear_chunk_b * query_len
-            + self.constant_chunk_c
+            self.quadratic_chunk_a * x_ideal
+            + self.shared_max_chunk_d * x_waste
+            + self.linear_chunk_b * total_query_tokens
+            + self.constant_chunk_c * batch_size
         )
+
+    def predict_with_history_batch(
+        self,
+        num_computed_tokens: int,
+        max_chunk_size: int,
+        scheduled_chunks: list[tuple[int, int]],
+        base_chunk_size: int,
+        page_size: int,
+        target_time: float = 0,
+    ) -> int | None:
+        """Predict a candidate chunk while accounting for the current batch.
+
+        All fitted coefficients are non-negative, so batch latency is
+        monotonic in the candidate chunk. A small integer binary search avoids
+        a fragile piecewise closed form around changes of ``max_seq_len``.
+        """
+        if not self.is_ready or not self.with_history_ready or self.target_latency is None:
+            return None
+        if max_chunk_size <= 0:
+            return None
+
+        latency_limit = target_time if target_time > 0 else self.target_latency
+        low, high = 0, max_chunk_size
+        while low < high:
+            mid = (low + high + 1) // 2
+            predicted_time = self.get_batch_time_with_history(
+                [*scheduled_chunks, (mid, num_computed_tokens)]
+            )
+            if predicted_time <= latency_limit:
+                low = mid
+            else:
+                high = mid - 1
+
+        raw_chunk_size = low
+        if raw_chunk_size <= 0:
+            raw_chunk_size = min(max_chunk_size, self.min_chunk)
+
+        smoothed = base_chunk_size + self.smooth_factor * (raw_chunk_size - base_chunk_size)
+        chunk_size = max(int(smoothed), self.min_chunk)
+        chunk_size = min(chunk_size, max_chunk_size)
+
+        align = max(page_size, 64)
+        if chunk_size >= align:
+            chunk_size = (chunk_size // align) * align
+        return chunk_size if chunk_size > 0 else None
 
     def predict(
         self,
@@ -322,8 +405,8 @@ class ChunkSizePredictor:
         page_size: int,
         target_time: float = 0,
     ) -> int | None:
-        """Predict next chunk size x using the history-aware model
-        f(C,H) = a*C(C+H) + b*C + c.
+        """Predict next chunk size x using the single-request projection of
+        the history-aware batch model.
 
         Args:
             num_computed_tokens: Number of tokens already computed (C),
@@ -432,6 +515,25 @@ class ProfilingChunkManager:
             target_time=target_time,
         )
 
+    def predict_batch_chunk_size(
+        self,
+        num_computed_tokens: int,
+        max_chunk_size: int,
+        scheduled_chunks: list[tuple[int, int]],
+        target_time: float,
+    ) -> int | None:
+        """Predict a chunk against the latency of the complete pending batch."""
+        if not self.history_ready:
+            return self.predict_chunk_size(num_computed_tokens, target_time)
+        return self.predictor.predict_with_history_batch(
+            num_computed_tokens=num_computed_tokens,
+            max_chunk_size=max_chunk_size,
+            scheduled_chunks=scheduled_chunks,
+            base_chunk_size=self.base_chunk_size,
+            page_size=self.page_size,
+            target_time=target_time,
+        )
+
     def predict_time(self, num_new_tokens: int, num_computed_tokens: int) -> float:
         """Get the consumed time of scheduled reqs for time_budget."""
         if not self.is_ready:
@@ -446,19 +548,16 @@ class ProfilingChunkManager:
     def record_batch_execution_time(self, request_chunks: list, elapsed_time: float) -> bool:
         """Record batch execution time for online model refinement.
 
-        Accumulates (x1, x2, x3, time_ms) data points and re-fits the
+        Accumulates (x_ideal, x_waste, total_query_tokens, batch_size,
+        time_ms) data points and re-fits the
         history-aware model once enough points are collected.
 
         Args:
             request_chunks: List of (chunk_size, num_computed_tokens) per request
             elapsed_time: Total elapsed time in seconds
         """
-        x1 = x2 = x3 = 0
-        for chunk, hist in request_chunks:
-            x1 += (chunk + hist) * chunk
-            x2 += chunk
-            x3 += 1
-        self.chunked_fit_data.append([x1, x2, x3, elapsed_time * 1000])
+        features = self.predictor.batch_features(request_chunks)
+        self.chunked_fit_data.append([*features, elapsed_time * 1000])
         if not self.predictor.fit_chunk(self.chunked_fit_data):
             return False
 

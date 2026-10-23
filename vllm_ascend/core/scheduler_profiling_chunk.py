@@ -287,6 +287,10 @@ class ProfilingChunkScheduler(Scheduler):
 
         req_to_new_blocks: dict[str, KVCacheBlocks] = {}
         num_scheduled_tokens: dict[str, int] = {}
+        # Request shapes already admitted to this forward. The history-aware
+        # predictor needs the complete pending batch to account for operators
+        # whose work is based on the batch-wide maximum sequence length.
+        scheduled_request_chunks: dict[str, tuple[int, int]] = {}
         # >>> PROFILING CHUNK >>>
         target_latency = self.profiling_chunk_manager.predictor.target_latency
         time_budget = target_latency if target_latency is not None else float("inf")
@@ -433,10 +437,15 @@ class ProfilingChunkScheduler(Scheduler):
                 self.profiling_chunk_manager is not None
                 and self.profiling_chunk_manager.is_ready
                 and request.num_computed_tokens < request.num_prompt_tokens
-                and request.num_computed_tokens > 0
+                and (
+                    request.num_computed_tokens > 0
+                    or (self.profiling_chunk_manager.history_ready and scheduled_request_chunks)
+                )
             ):
-                predicted_chunk = self.profiling_chunk_manager.predict_chunk_size(
+                predicted_chunk = self.profiling_chunk_manager.predict_batch_chunk_size(
                     num_computed_tokens=request.num_computed_tokens,
+                    max_chunk_size=num_new_tokens,
+                    scheduled_chunks=list(scheduled_request_chunks.values()),
                     target_time=time_budget,
                 )
                 if predicted_chunk is not None and predicted_chunk > 0:
@@ -510,6 +519,7 @@ class ProfilingChunkScheduler(Scheduler):
                             token_budget += restored
                             input_budget += restored + draft_slots
                             req_to_new_blocks.pop(preempted_req_id)
+                            scheduled_request_chunks.pop(preempted_req_id, None)
                             scheduled_spec_decode_tokens.pop(preempted_req_id, None)
                             preempted_encoder_inputs = scheduled_encoder_inputs.pop(preempted_req_id, None)
                             if preempted_encoder_inputs:
@@ -542,6 +552,7 @@ class ProfilingChunkScheduler(Scheduler):
             request_id = request.request_id
             req_to_new_blocks[request_id] = new_blocks
             num_scheduled_tokens[request_id] = num_new_tokens
+            scheduled_request_chunks[request_id] = (num_new_tokens, request.num_computed_tokens)
             token_budget -= num_new_tokens
             input_budget -= num_new_tokens + draft_slots
 
@@ -821,10 +832,15 @@ class ProfilingChunkScheduler(Scheduler):
                         self.profiling_chunk_manager is not None
                         and self.profiling_chunk_manager.is_ready
                         and request.num_computed_tokens < request.num_prompt_tokens
-                        and request.num_computed_tokens > 0
+                        and (
+                            num_computed_tokens > 0
+                            or (self.profiling_chunk_manager.history_ready and scheduled_request_chunks)
+                        )
                     ):
-                        predicted_chunk = self.profiling_chunk_manager.predict_chunk_size(
+                        predicted_chunk = self.profiling_chunk_manager.predict_batch_chunk_size(
                             num_computed_tokens=num_computed_tokens,
+                            max_chunk_size=num_new_tokens,
+                            scheduled_chunks=list(scheduled_request_chunks.values()),
                             target_time=time_budget,
                         )
                         if predicted_chunk is not None and predicted_chunk > 0:
@@ -1008,6 +1024,7 @@ class ProfilingChunkScheduler(Scheduler):
                     scheduled_loras.add(request.lora_request.lora_int_id)
                 req_to_new_blocks[request_id] = self.kv_cache_manager.get_blocks(request_id)
                 num_scheduled_tokens[request_id] = num_new_tokens
+                scheduled_request_chunks[request_id] = (num_new_tokens, num_computed_tokens)
                 token_budget -= num_new_tokens
                 input_budget -= num_new_tokens + draft_slots
 
