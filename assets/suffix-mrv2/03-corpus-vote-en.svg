@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1050" viewBox="0 0 1440 1050">
+<rect width="100%" height="100%" fill="white"/>
+<text x="60" y="35" font-family="Microsoft YaHei, sans-serif" font-size="29" dominant-baseline="text-before-edge" fill="#333333" font-weight="700">Cross-request retrieval: lookup, match and vote</text>
+<text x="60" y="84" font-family="Microsoft YaHei, sans-serif" font-size="21" dominant-baseline="text-before-edge" fill="#666666">The last 2 / 4 tokens locate candidates. Actual suffix matches can extend backwards up to D tokens.</text>
+<text x="60" y="157" font-family="Microsoft YaHei, sans-serif" font-size="23" dominant-baseline="text-before-edge" fill="#333333">Current request tail</text>
+<text x="300" y="161" font-family="Microsoft YaHei, sans-serif" font-size="26" dominant-baseline="text-before-edge" fill="#666666">...</text>
+<rect x="360" y="145" width="95" height="60" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="392.1666666666667" y="161.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">11</text>
+<rect x="455" y="145" width="95" height="60" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="487.1666666666667" y="161.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">22</text>
+<rect x="550" y="145" width="95" height="60" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="582.1666666666666" y="161.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">33</text>
+<rect x="645" y="145" width="95" height="60" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="677.1666666666666" y="161.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">44</text>
+<polyline points="360,211 360,218 740,218 740,211" fill="none" stroke="#333333" stroke-width="1.2"/>
+<text x="487.3385416666667" y="228" font-family="Microsoft YaHei, sans-serif" font-size="20" dominant-baseline="text-before-edge" fill="#666666">Last 4 tokens</text>
+<polyline points="550,258 550,265 740,265 740,258" fill="none" stroke="#333333" stroke-width="1.2"/>
+<text x="582.3385416666666" y="275" font-family="Microsoft YaHei, sans-serif" font-size="20" dominant-baseline="text-before-edge" fill="#666666">Last 2 tokens</text>
+<text x="945" y="105" font-family="Microsoft YaHei, sans-serif" font-size="19" dominant-baseline="text-before-edge" fill="#666666">4-token bucket</text>
+<rect x="945" y="135" width="48" height="45" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<rect x="993" y="135" width="48" height="45" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<rect x="1041" y="135" width="48" height="45" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<rect x="1089" y="135" width="48" height="45" fill="white" stroke="#333333" stroke-width="1.2"/>
+<rect x="1137" y="135" width="48" height="45" fill="white" stroke="#333333" stroke-width="1.2"/>
+<rect x="1185" y="135" width="48" height="45" fill="white" stroke="#333333" stroke-width="1.2"/>
+<rect x="1233" y="135" width="48" height="45" fill="white" stroke="#333333" stroke-width="1.2"/>
+<rect x="1281" y="135" width="48" height="45" fill="white" stroke="#333333" stroke-width="1.2"/>
+<text x="945" y="215" font-family="Microsoft YaHei, sans-serif" font-size="19" dominant-baseline="text-before-edge" fill="#666666">2-token bucket</text>
+<rect x="945" y="245" width="48" height="45" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<rect x="993" y="245" width="48" height="45" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<rect x="1041" y="245" width="48" height="45" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<rect x="1089" y="245" width="48" height="45" fill="white" stroke="#333333" stroke-width="1.2"/>
+<rect x="1137" y="245" width="48" height="45" fill="white" stroke="#333333" stroke-width="1.2"/>
+<rect x="1185" y="245" width="48" height="45" fill="white" stroke="#333333" stroke-width="1.2"/>
+<rect x="1233" y="245" width="48" height="45" fill="white" stroke="#333333" stroke-width="1.2"/>
+<rect x="1281" y="245" width="48" height="45" fill="white" stroke="#333333" stroke-width="1.2"/>
+<polyline points="770,167 925,157" fill="none" stroke="#333333" stroke-width="1.2"/>
+<polygon points="925,157 916.2942511911164,161.92035950684712 915.7341697523827,153.23909720647552" fill="#333333"/>
+<text x="805" y="130" font-family="Microsoft YaHei, sans-serif" font-size="18" dominant-baseline="text-before-edge" fill="#666666">hash</text>
+<polyline points="770,270 925,267" fill="none" stroke="#333333" stroke-width="1.2"/>
+<polygon points="925,267 916.0813861976098,271.5230883082044 915.9130439708399,262.82540659176107" fill="#333333"/>
+<text x="805" y="239" font-family="Microsoft YaHei, sans-serif" font-size="18" dominant-baseline="text-before-edge" fill="#666666">hash</text>
+<text x="60" y="331" font-family="Microsoft YaHei, sans-serif" font-size="22" dominant-baseline="text-before-edge" fill="#333333">Up to 16 positions → verify and extend → deduplicate → read continuations</text>
+<polyline points="60,385 1380,385" fill="none" stroke="#dddddd" stroke-width="1.2"/>
+<text x="330" y="408" font-family="Microsoft YaHei, sans-serif" font-size="21" dominant-baseline="text-before-edge" fill="#666666">Verified suffix matches</text>
+<text x="840" y="408" font-family="Microsoft YaHei, sans-serif" font-size="21" dominant-baseline="text-before-edge" fill="#666666">Candidate continuations</text>
+<text x="60" y="475" font-family="Microsoft YaHei, sans-serif" font-size="22" dominant-baseline="text-before-edge" fill="#333333">Completed response A</text>
+<rect x="330" y="455" width="95" height="62" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="362.1666666666667" y="472.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">11</text>
+<rect x="425" y="455" width="95" height="62" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="457.1666666666667" y="472.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">22</text>
+<rect x="520" y="455" width="95" height="62" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="552.1666666666666" y="472.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">33</text>
+<rect x="615" y="455" width="95" height="62" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="647.1666666666666" y="472.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">44</text>
+<polyline points="735,486 795,486" fill="none" stroke="#333333" stroke-width="1.2"/>
+<polygon points="795,486 785.9955289764732,490.3496553411123 785.9955289764732,481.6503446588877" fill="#333333"/>
+<rect x="820" y="455" width="95" height="62" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="852.1666666666666" y="472.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">70</text>
+<rect x="915" y="455" width="95" height="62" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="947.1666666666666" y="472.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">71</text>
+<rect x="1010" y="455" width="95" height="62" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="1042.1666666666667" y="472.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">72</text>
+<text x="60" y="565" font-family="Microsoft YaHei, sans-serif" font-size="22" dominant-baseline="text-before-edge" fill="#333333">Completed response B</text>
+<rect x="330" y="545" width="95" height="62" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="362.1666666666667" y="562.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">11</text>
+<rect x="425" y="545" width="95" height="62" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="457.1666666666667" y="562.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">22</text>
+<rect x="520" y="545" width="95" height="62" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="552.1666666666666" y="562.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">33</text>
+<rect x="615" y="545" width="95" height="62" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="647.1666666666666" y="562.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">44</text>
+<polyline points="735,576 795,576" fill="none" stroke="#333333" stroke-width="1.2"/>
+<polygon points="795,576 785.9955289764732,580.3496553411123 785.9955289764732,571.6503446588877" fill="#333333"/>
+<rect x="820" y="545" width="95" height="62" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="852.1666666666666" y="562.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">70</text>
+<rect x="915" y="545" width="95" height="62" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="947.1666666666666" y="562.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">71</text>
+<rect x="1010" y="545" width="95" height="62" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="1042.1666666666667" y="562.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">72</text>
+<text x="60" y="655" font-family="Microsoft YaHei, sans-serif" font-size="22" dominant-baseline="text-before-edge" fill="#333333">Completed response C</text>
+<rect x="330" y="635" width="95" height="62" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="362.1666666666667" y="652.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">11</text>
+<rect x="425" y="635" width="95" height="62" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="457.1666666666667" y="652.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">22</text>
+<rect x="520" y="635" width="95" height="62" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="552.1666666666666" y="652.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">33</text>
+<rect x="615" y="635" width="95" height="62" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="647.1666666666666" y="652.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">44</text>
+<polyline points="735,666 795,666" fill="none" stroke="#333333" stroke-width="1.2"/>
+<polygon points="795,666 785.9955289764732,670.3496553411123 785.9955289764732,661.6503446588877" fill="#333333"/>
+<rect x="820" y="635" width="95" height="62" fill="white" stroke="#333333" stroke-width="1.2"/>
+<text x="852.1666666666666" y="652.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">80</text>
+<rect x="915" y="635" width="95" height="62" fill="white" stroke="#333333" stroke-width="1.2"/>
+<text x="947.1666666666666" y="652.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">81</text>
+<rect x="1010" y="635" width="95" height="62" fill="white" stroke="#333333" stroke-width="1.2"/>
+<text x="1042.1666666666667" y="652.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">82</text>
+<polyline points="960,715 960,765" fill="none" stroke="#333333" stroke-width="1.2"/>
+<polygon points="960,765 955.6503446588877,755.9955289764732 964.3496553411123,755.9955289764732" fill="#333333"/>
+<text x="60" y="798" font-family="Microsoft YaHei, sans-serif" font-size="23" dominant-baseline="text-before-edge" fill="#333333">Prefix-consistent vote</text>
+<rect x="820" y="785" width="95" height="62" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="852.1666666666666" y="802.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">70</text>
+<rect x="915" y="785" width="95" height="62" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="947.1666666666666" y="802.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">71</text>
+<rect x="1010" y="785" width="95" height="62" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="1042.1666666666667" y="802.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">72</text>
+<text x="355" y="798" font-family="Microsoft YaHei, sans-serif" font-size="22" dominant-baseline="text-before-edge" fill="#333333">70: 2 votes → keep A / B</text>
+<polyline points="60,890 1380,890" fill="none" stroke="#dddddd" stroke-width="1.2"/>
+<text x="60" y="917" font-family="Microsoft YaHei, sans-serif" font-size="21" dominant-baseline="text-before-edge" fill="#666666">After choosing 70, response C no longer votes: subsequent tokens must extend the chosen prefix.</text>
+<text x="60" y="961" font-family="Microsoft YaHei, sans-serif" font-size="21" dominant-baseline="text-before-edge" fill="#666666">All matches have length 4 here. In general, compare support scores across match-length thresholds.</text>
+</svg>

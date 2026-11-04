@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="570" viewBox="0 0 1440 570">
+<rect width="100%" height="100%" fill="white"/>
+<text x="60" y="35" font-family="Microsoft YaHei, sans-serif" font-size="29" dominant-baseline="text-before-edge" fill="#333333" font-weight="700">Own-history retrieval: longest suffix match</text>
+<text x="60" y="84" font-family="Microsoft YaHei, sans-serif" font-size="21" dominant-baseline="text-before-edge" fill="#666666">K = 3 in this example. Match the current suffix against earlier positions in the same request.</text>
+<text x="60" y="172" font-family="Microsoft YaHei, sans-serif" font-size="23" dominant-baseline="text-before-edge" fill="#333333">Current request history</text>
+<text x="453.6666666666667" y="128" font-family="Microsoft YaHei, sans-serif" font-size="18" dominant-baseline="text-before-edge" fill="#666666">0</text>
+<text x="571.6666666666666" y="128" font-family="Microsoft YaHei, sans-serif" font-size="18" dominant-baseline="text-before-edge" fill="#666666">1</text>
+<text x="689.6666666666666" y="128" font-family="Microsoft YaHei, sans-serif" font-size="18" dominant-baseline="text-before-edge" fill="#666666">2</text>
+<text x="807.6666666666666" y="128" font-family="Microsoft YaHei, sans-serif" font-size="18" dominant-baseline="text-before-edge" fill="#666666">3</text>
+<text x="925.6666666666666" y="128" font-family="Microsoft YaHei, sans-serif" font-size="18" dominant-baseline="text-before-edge" fill="#666666">4</text>
+<text x="1043.6666666666667" y="128" font-family="Microsoft YaHei, sans-serif" font-size="18" dominant-baseline="text-before-edge" fill="#666666">5</text>
+<rect x="400" y="165" width="118" height="70" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="443.6666666666667" y="186.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">10</text>
+<rect x="518" y="165" width="118" height="70" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="561.6666666666666" y="186.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">20</text>
+<rect x="636" y="165" width="118" height="70" fill="white" stroke="#333333" stroke-width="1.2"/>
+<text x="679.6666666666666" y="186.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">30</text>
+<rect x="754" y="165" width="118" height="70" fill="white" stroke="#333333" stroke-width="1.2"/>
+<text x="797.6666666666666" y="186.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">40</text>
+<rect x="872" y="165" width="118" height="70" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="915.6666666666666" y="186.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">10</text>
+<rect x="990" y="165" width="118" height="70" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="1033.6666666666667" y="186.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">20</text>
+<polyline points="400,243 400,250 636,250 636,243" fill="none" stroke="#333333" stroke-width="1.2"/>
+<text x="455.6666666666667" y="260" font-family="Microsoft YaHei, sans-serif" font-size="20" dominant-baseline="text-before-edge" fill="#666666">Earlier match</text>
+<polyline points="872,243 872,250 1108,250 1108,243" fill="none" stroke="#333333" stroke-width="1.2"/>
+<text x="926.6666666666666" y="260" font-family="Microsoft YaHei, sans-serif" font-size="20" dominant-baseline="text-before-edge" fill="#666666">Current suffix</text>
+<text x="60" y="330" font-family="Microsoft YaHei, sans-serif" font-size="22" dominant-baseline="text-before-edge" fill="#333333">Copy up to K tokens after the earlier match.</text>
+<polyline points="750,300 750,350" fill="none" stroke="#333333" stroke-width="1.2"/>
+<polygon points="750,350 745.6503446588877,340.9955289764732 754.3496553411123,340.9955289764732" fill="#333333"/>
+<rect x="573" y="370" width="118" height="70" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="616.6666666666666" y="391.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">30</text>
+<rect x="691" y="370" width="118" height="70" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="734.6666666666666" y="391.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">40</text>
+<rect x="809" y="370" width="118" height="70" fill="#ffcccc" stroke="#333333" stroke-width="1.2"/>
+<text x="852.6666666666666" y="391.5" font-family="Microsoft YaHei, sans-serif" font-size="27" dominant-baseline="text-before-edge" fill="#333333">10</text>
+<text x="980" y="390" font-family="Microsoft YaHei, sans-serif" font-size="23" dominant-baseline="text-before-edge" fill="#333333">Candidate draft</text>
+<polyline points="60,477 1380,477" fill="none" stroke="#dddddd" stroke-width="1.2"/>
+<text x="60" y="505" font-family="Microsoft YaHei, sans-serif" font-size="21" dominant-baseline="text-before-edge" fill="#666666">Longest match wins; ties prefer the later occurrence. Match depth is capped at D; draft length at K.</text>
+</svg>
